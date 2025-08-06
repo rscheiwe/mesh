@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://github.com/user-attachments/assets/ea0a0014-cdff-446c-a500-5cef964c6e0e" width="200" height="200">
+<img width="200" height="200" alt="Image" src="https://github.com/user-attachments/assets/719e9cd0-c192-40a0-b36d-9bc277f40f34" />
 <h1>Mesh</h1>
 
 </div>
