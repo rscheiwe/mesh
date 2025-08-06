@@ -1,0 +1,14 @@
+# UV configuration for the mesh project
+
+# Index settings
+index-strategy = "first-index"
+
+# Dependency resolution settings  
+prerelease = "if-necessary"
+resolution = "highest"
+
+# Compile Python files to bytecode
+compile-bytecode = true
+
+# Optional: Add extra index URLs
+# extra-index-url = ["https://download.pytorch.org/whl/cpu"]
