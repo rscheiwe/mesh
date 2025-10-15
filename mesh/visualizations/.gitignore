@@ -1,0 +1,9 @@
+# Ignore all generated visualization files
+*.png
+*.svg
+*.pdf
+*.jpg
+*.jpeg
+
+# But keep this directory in git
+!.gitignore

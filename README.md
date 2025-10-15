@@ -33,6 +33,7 @@ Comprehensive guides and API reference:
 
 - **Graph-Based Workflows**: Build agent workflows as directed graphs with controlled cycles
 - **Dual API**: Programmatic (LangGraph-style) and declarative (React Flow JSON) interfaces
+- **Graph Visualization**: Generate Mermaid diagrams with color-coded node types
 - **Token-by-Token Streaming**: Real-time streaming with provider-agnostic events
 - **Event Translation**: Use Vel's standardized events or provider-native events
 - **Multiple Agent Frameworks**: Auto-detection for Vel and OpenAI Agents SDK

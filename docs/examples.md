@@ -68,6 +68,47 @@ python examples/fastapi_server.py
 # Visit http://localhost:8000/docs
 ```
 
+### Visualization Examples
+
+Complete examples demonstrating graph visualization with Mermaid diagrams. All examples are in [examples/visualization_examples/](https://github.com/rscheiwe/mesh/tree/main/examples/visualization_examples).
+
+#### [01_cyclic_graph.py](https://github.com/rscheiwe/mesh/blob/main/examples/visualization_examples/01_cyclic_graph.py)
+Loop patterns with termination points.
+
+```bash
+python examples/visualization_examples/01_cyclic_graph.py
+```
+
+#### [02_sequential_workflow.py](https://github.com/rscheiwe/mesh/blob/main/examples/visualization_examples/02_sequential_workflow.py)
+Linear pipeline visualization.
+
+```bash
+python examples/visualization_examples/02_sequential_workflow.py
+```
+
+#### [03_conditional_branching.py](https://github.com/rscheiwe/mesh/blob/main/examples/visualization_examples/03_conditional_branching.py)
+Decision points with diamond-shaped condition nodes.
+
+```bash
+python examples/visualization_examples/03_conditional_branching.py
+```
+
+#### [04_multi_agent_workflow.py](https://github.com/rscheiwe/mesh/blob/main/examples/visualization_examples/04_multi_agent_workflow.py)
+Multi-stage processing pipeline.
+
+```bash
+python examples/visualization_examples/04_multi_agent_workflow.py
+```
+
+#### [05_mixed_node_types.py](https://github.com/rscheiwe/mesh/blob/main/examples/visualization_examples/05_mixed_node_types.py)
+**Color palette showcase** - demonstrates all node type colors in one graph.
+
+```bash
+python examples/visualization_examples/05_mixed_node_types.py
+```
+
+See the [Visualization Guide](guides/visualization) for detailed documentation.
+
 ## Running Examples
 
 ### Setup

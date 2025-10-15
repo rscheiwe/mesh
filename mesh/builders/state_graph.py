@@ -5,6 +5,9 @@ inspired by LangGraph's StateGraph pattern.
 """
 
 from typing import Callable, Optional, List, Dict, Any, Union
+from datetime import datetime
+from pathlib import Path
+
 from mesh.core.graph import ExecutionGraph, Edge
 from mesh.nodes.base import Node
 from mesh.nodes.start import StartNode
@@ -15,6 +18,7 @@ from mesh.nodes.tool import ToolNode
 from mesh.nodes.condition import ConditionNode, Condition
 from mesh.nodes.loop import LoopNode
 from mesh.utils.errors import GraphValidationError
+from mesh.utils.mermaid import generate_mermaid_code, save_mermaid_image, get_default_visualization_dir
 
 
 class StateGraph:
@@ -297,6 +301,93 @@ class StateGraph:
         for i in range(len(node_ids) - 1):
             self.add_edge(node_ids[i], node_ids[i + 1])
         return self
+
+    def mermaid_code(
+        self,
+        title: Optional[str] = None,
+        direction: str = "TD",
+    ) -> str:
+        """Generate Mermaid flowchart code for this graph.
+
+        This compiles the graph and generates a Mermaid diagram representation.
+        Different node types are styled with different colors for clarity.
+
+        Args:
+            title: Optional title to display above the diagram
+            direction: Flowchart direction - "TD" (top-down) or "LR" (left-right)
+
+        Returns:
+            String containing Mermaid flowchart code
+
+        Example:
+            >>> graph = StateGraph()
+            >>> graph.add_node("agent", my_agent, node_type="agent")
+            >>> graph.add_edge("START", "agent")
+            >>> graph.set_entry_point("agent")
+            >>> code = graph.mermaid_code(title="My Agent Graph")
+            >>> print(code)
+        """
+        # Compile graph to get ExecutionGraph
+        compiled = self.compile()
+
+        # Generate Mermaid code
+        return generate_mermaid_code(compiled, title=title, direction=direction)
+
+    def save_visualization(
+        self,
+        output_path: Optional[str] = None,
+        title: Optional[str] = None,
+        image_format: str = "png",
+        direction: str = "TD",
+    ) -> str:
+        """Generate and save a Mermaid diagram visualization of this graph.
+
+        This compiles the graph, generates Mermaid code, and saves it as an image
+        using the mermaid.ink API.
+
+        Args:
+            output_path: Path where image should be saved. If None, saves to
+                mesh/visualizations/ with auto-generated filename
+            title: Optional title to display above the diagram
+            image_format: Output format - "png", "svg", or "pdf" (default: "png")
+            direction: Flowchart direction - "TD" (top-down) or "LR" (left-right)
+
+        Returns:
+            Path to saved image file
+
+        Raises:
+            httpx.HTTPError: If image generation fails
+            GraphValidationError: If graph is invalid
+
+        Example:
+            >>> graph = StateGraph()
+            >>> graph.add_node("check", check_fn, node_type="tool")
+            >>> graph.add_node("increment", increment_fn, node_type="tool")
+            >>> graph.add_edge("START", "check")
+            >>> graph.add_edge("check", "increment")
+            >>> graph.add_edge("increment", "check", is_loop_edge=True, max_iterations=10)
+            >>> graph.set_entry_point("check")
+            >>> path = graph.save_visualization(title="Divisible By 5 Graph")
+            >>> print(f"Saved to: {path}")
+        """
+        # Generate Mermaid code
+        mermaid_code = self.mermaid_code(title=title, direction=direction)
+
+        # Determine output path
+        if output_path is None:
+            # Auto-generate filename with timestamp
+            vis_dir = get_default_visualization_dir()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            graph_name = title.replace(" ", "_") if title else "graph"
+            filename = f"{graph_name}_{timestamp}.{image_format}"
+            output_path = str(vis_dir / filename)
+
+        # Save image
+        return save_mermaid_image(
+            mermaid_code,
+            output_path,
+            image_format=image_format,
+        )
 
     def __repr__(self) -> str:
         return (

@@ -9,6 +9,11 @@ from mesh.utils.errors import (
     NodeExecutionError,
     VariableResolutionError,
 )
+from mesh.utils.mermaid import (
+    generate_mermaid_code,
+    save_mermaid_image,
+    get_default_visualization_dir,
+)
 
 __all__ = [
     "VariableResolver",
@@ -20,4 +25,7 @@ __all__ = [
     "GraphValidationError",
     "NodeExecutionError",
     "VariableResolutionError",
+    "generate_mermaid_code",
+    "save_mermaid_image",
+    "get_default_visualization_dir",
 ]
