@@ -156,7 +156,35 @@ graph.add_edge("loop", "processor")
 graph.set_entry_point("loop")
 ```
 
-### Pattern 5: Multi-Agent Workflow
+### Pattern 5: Controlled Cycles (Loop Until Done)
+
+```python
+def increment_value(input: dict) -> dict:
+    value = input.get("value", 0)
+    return {"value": value + 1, "done": value + 1 >= 10}
+
+graph = StateGraph()
+graph.add_node("increment", increment_value, node_type="tool")
+
+# Create controlled cycle
+graph.add_edge("START", "increment")
+graph.add_edge(
+    "increment",
+    "increment",  # Loop back to itself
+    is_loop_edge=True,
+    loop_condition=lambda state, output: not output.get("done", False),
+    max_iterations=50  # Safety limit
+)
+
+graph.set_entry_point("increment")
+```
+
+**Key points:**
+- Mark cycle edges with `is_loop_edge=True`
+- Provide `loop_condition` (returns True to continue) and/or `max_iterations`
+- Loop condition receives `(state: Dict, output: Dict) -> bool`
+
+### Pattern 6: Multi-Agent Workflow
 
 ```python
 from vel import Agent as VelAgent
@@ -391,7 +419,16 @@ from mesh import StateGraph
 
 ### "Cycle detected in graph"
 
-**Solution:** Remove edges that create cycles. Graphs must be acyclic (DAGs).
+**Solution:** Mark cycle edges as controlled loops with `is_loop_edge=True` and add controls:
+
+```python
+# Mark as loop edge with max_iterations
+graph.add_edge("node_a", "node_b", is_loop_edge=True, max_iterations=10)
+
+# Or use a condition
+graph.add_edge("node_a", "node_b", is_loop_edge=True,
+               loop_condition=lambda state, output: output.get("count", 0) < 5)
+```
 
 ### "No module named 'openai'"
 

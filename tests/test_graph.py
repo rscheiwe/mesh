@@ -35,14 +35,16 @@ def test_graph_validation_passes():
 
 
 def test_graph_detects_cycle():
-    """Test that cycles are detected."""
+    """Test that uncontrolled cycles are detected."""
     nodes = {
-        "a": StartNode("a"),
+        "start": StartNode("start"),
+        "a": EndNode("a"),
         "b": EndNode("b"),
     }
     edges = [
+        Edge(source="start", target="a"),
         Edge(source="a", target="b"),
-        Edge(source="b", target="a"),  # Creates cycle
+        Edge(source="b", target="a"),  # Creates uncontrolled cycle a->b->a
     ]
 
     graph = ExecutionGraph.from_nodes_and_edges(nodes, edges)
@@ -87,3 +89,61 @@ def test_get_parents_and_children():
     assert graph.get_children("start") == ["middle"]
     assert graph.get_parents("start") == set()
     assert graph.get_children("end") == []
+
+
+def test_controlled_loop_with_max_iterations():
+    """Test that controlled loops with max_iterations are allowed."""
+    nodes = {
+        "start": StartNode("start"),
+        "loop": EndNode("loop"),
+    }
+    edges = [
+        Edge(source="start", target="loop"),
+        Edge(source="loop", target="loop", is_loop_edge=True, max_iterations=10),
+    ]
+
+    graph = ExecutionGraph.from_nodes_and_edges(nodes, edges)
+    graph.validate()  # Should not raise
+
+    # Loop edge should not create a dependency
+    assert graph.get_parents("loop") == {"start"}
+    assert "loop" not in graph.get_parents("loop")
+
+
+def test_controlled_loop_with_condition():
+    """Test that controlled loops with conditions are allowed."""
+    nodes = {
+        "start": StartNode("start"),
+        "a": EndNode("a"),
+        "b": EndNode("b"),
+    }
+    edges = [
+        Edge(source="start", target="a"),
+        Edge(source="a", target="b"),
+        Edge(
+            source="b",
+            target="a",
+            is_loop_edge=True,
+            loop_condition=lambda state, output: state.get("count", 0) < 5,
+        ),
+    ]
+
+    graph = ExecutionGraph.from_nodes_and_edges(nodes, edges)
+    graph.validate()  # Should not raise
+
+
+def test_loop_edge_without_controls_fails():
+    """Test that loop edges without controls fail validation."""
+    nodes = {
+        "start": StartNode("start"),
+        "a": EndNode("a"),
+    }
+    edges = [
+        Edge(source="start", target="a"),
+        Edge(source="a", target="a", is_loop_edge=True),  # No controls!
+    ]
+
+    graph = ExecutionGraph.from_nodes_and_edges(nodes, edges)
+
+    with pytest.raises(GraphValidationError, match="loop_condition or max_iterations"):
+        graph.validate()

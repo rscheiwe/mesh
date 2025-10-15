@@ -24,6 +24,7 @@ class ExecutionContext:
         iteration_context: Context for loop iterations
         trace_id: Unique identifier for this execution trace
         executed_data: List of node execution results
+        loop_iterations: Tracking for cyclic edges (edge_key -> iteration_count)
     """
 
     graph_id: str
@@ -34,6 +35,7 @@ class ExecutionContext:
     iteration_context: Optional[Dict[str, Any]] = None
     trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     executed_data: List[Dict[str, Any]] = field(default_factory=list)
+    loop_iterations: Dict[str, int] = field(default_factory=dict)  # Track loop edge iterations
 
     # Event emitter reference (set by executor)
     _event_emitter: Optional[Any] = field(default=None, repr=False)
@@ -68,6 +70,30 @@ class ExecutionContext:
     def clear_iteration_context(self) -> None:
         """Clear iteration context after loop completion."""
         self.iteration_context = None
+
+    def get_loop_iteration(self, edge_key: str) -> int:
+        """Get current iteration count for a loop edge.
+
+        Args:
+            edge_key: Unique key for the edge (e.g., "source->target")
+
+        Returns:
+            Current iteration count (0 if never executed)
+        """
+        return self.loop_iterations.get(edge_key, 0)
+
+    def increment_loop_iteration(self, edge_key: str) -> int:
+        """Increment and return iteration count for a loop edge.
+
+        Args:
+            edge_key: Unique key for the edge (e.g., "source->target")
+
+        Returns:
+            New iteration count after incrementing
+        """
+        current = self.loop_iterations.get(edge_key, 0)
+        self.loop_iterations[edge_key] = current + 1
+        return current + 1
 
     def add_executed_node(self, node_id: str, output: Any, status: str = "FINISHED") -> None:
         """Record a node execution result.

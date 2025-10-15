@@ -11,10 +11,11 @@ Graphs are the foundation of Mesh. They define the structure and flow of your mu
 
 ## What is a Graph?
 
-A **graph** in Mesh is a **directed acyclic graph (DAG)** composed of:
+A **graph** in Mesh is a **directed graph** composed of:
 - **Nodes**: Units of execution (agents, LLMs, tools, etc.)
 - **Edges**: Connections between nodes defining execution flow
 - **Entry Point**: The starting node for execution
+- **Controlled Cycles**: Optional loops with exit conditions or iteration limits
 
 ## Graph Structure
 
@@ -33,7 +34,7 @@ END (implicit)
 ### Key Properties
 
 1. **Directed**: Edges have a direction (source → target)
-2. **Acyclic**: No cycles (can't loop back to earlier nodes)
+2. **Controlled Cycles**: Loops are allowed with proper controls (conditions or max iterations)
 3. **Connected**: All nodes must be reachable from START
 
 ## Building Graphs
@@ -114,9 +115,10 @@ compiled = graph.compile()  # Validates automatically
 
 Validation checks:
 - Entry point is set
-- No cycles exist
+- No uncontrolled cycles (all cycles must have loop controls)
 - All nodes are connected
 - No orphaned nodes
+- Loop edges have proper controls (condition or max_iterations)
 
 ### 3. Compile
 
@@ -204,6 +206,71 @@ graph.add_edge("START", "B")
 graph.add_edge("A", "C")
 graph.add_edge("B", "C")  # C waits for both
 ```
+
+### Controlled Loops
+
+Mesh supports loops with proper controls to prevent infinite execution:
+
+#### Loop with Max Iterations
+
+```python
+# Self-loop with fixed iteration count
+graph.add_node("process", process_fn, node_type="tool")
+graph.add_edge("START", "process")
+graph.add_edge(
+    "process",
+    "process",  # Loop back to itself
+    is_loop_edge=True,
+    max_iterations=10  # Run at most 10 times
+)
+```
+
+#### Loop with Condition
+
+```python
+# Loop until condition is met
+def should_continue(state, output):
+    return output.get("value", 0) < 100
+
+graph.add_node("increment", increment_fn, node_type="tool")
+graph.add_edge("START", "increment")
+graph.add_edge(
+    "increment",
+    "increment",
+    is_loop_edge=True,
+    loop_condition=should_continue  # Exit when returns False
+)
+```
+
+#### Loop with Both Controls
+
+```python
+# Loop with condition AND max iterations for safety
+graph.add_node("check", check_fn, node_type="tool")
+graph.add_node("process", process_fn, node_type="tool")
+graph.add_edge("START", "check")
+graph.add_edge("check", "process")
+graph.add_edge(
+    "process",
+    "check",  # Loop back
+    is_loop_edge=True,
+    loop_condition=lambda state, output: not output.get("done", False),
+    max_iterations=50  # Safety limit
+)
+```
+
+**Loop Condition Signature:**
+```python
+def loop_condition(state: Dict, output: Dict) -> bool:
+    """Return True to continue loop, False to exit."""
+    return some_check(state, output)
+```
+
+**Key Requirements:**
+- Loop edges must have `is_loop_edge=True`
+- Must specify at least one: `loop_condition` or `max_iterations`
+- Loop conditions receive both shared state and node output
+- Conditions that fail (raise exception) safely exit the loop
 
 ## Execution Model
 
@@ -330,9 +397,24 @@ compiled = graph.compile()
 
 ### "Cycle detected in graph"
 
-**Problem:** Edge creates a cycle
+**Problem:** Edge creates an uncontrolled cycle (no loop controls)
 
-**Solution:** Remove the edge that causes the cycle. Graphs must be acyclic.
+**Solution:** Mark the edge as a loop edge with proper controls:
+
+```python
+# ❌ Bad: Uncontrolled cycle
+graph.add_edge("A", "B")
+graph.add_edge("B", "A")  # Error: cycle!
+
+# ✅ Good: Controlled loop
+graph.add_edge("A", "B")
+graph.add_edge(
+    "B",
+    "A",
+    is_loop_edge=True,
+    max_iterations=10  # Or use loop_condition
+)
+```
 
 ### "Orphaned nodes detected"
 
@@ -351,6 +433,28 @@ graph.add_edge("START", "orphaned_node")
 ```python
 graph.add_node("node_a", None, node_type="llm")  # Create first
 graph.add_edge("START", "node_a")  # Then reference
+```
+
+### "Loop edge must have loop_condition or max_iterations"
+
+**Problem:** Marked edge as `is_loop_edge=True` but didn't provide controls
+
+**Solution:** Add at least one control mechanism:
+```python
+# ❌ Bad: Loop edge without controls
+graph.add_edge("A", "A", is_loop_edge=True)
+
+# ✅ Good: With max_iterations
+graph.add_edge("A", "A", is_loop_edge=True, max_iterations=10)
+
+# ✅ Good: With condition
+graph.add_edge("A", "A", is_loop_edge=True,
+               loop_condition=lambda s, o: o.get("count", 0) < 5)
+
+# ✅ Best: With both for safety
+graph.add_edge("A", "A", is_loop_edge=True,
+               loop_condition=lambda s, o: not o.get("done", False),
+               max_iterations=100)
 ```
 
 ## Advanced Topics

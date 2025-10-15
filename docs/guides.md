@@ -12,6 +12,7 @@ Practical guides for using Mesh effectively.
 ## Available Guides
 
 - **[Streaming](guides/streaming)** - Token-by-token streaming patterns
+- **[Loops](guides/loops)** - Creating controlled cycles with loop conditions
 - **[State Management](guides/state-management)** - Managing persistent state
 - **[Variables](guides/variables)** - Template variable resolution
 - **[Conditional Branching](guides/conditional-branching)** - Building conditional workflows

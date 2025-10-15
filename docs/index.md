@@ -20,7 +20,7 @@ Build multi-agent workflows as executable graphs with token-by-token streaming, 
 ## Features
 
 **Graph-Based Workflows**
-: Build agent workflows as directed acyclic graphs (DAGs) with programmatic or declarative interfaces
+: Build agent workflows as directed graphs with controlled cycles, using programmatic or declarative interfaces
 
 **Dual API**
 : LangGraph-style programmatic builder or React Flow JSON (Flowise-compatible)

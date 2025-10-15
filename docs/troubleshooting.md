@@ -95,19 +95,36 @@ compiled = graph.compile()
 
 ### "Cycle detected in graph"
 
-**Problem:** Edges create a cycle.
+**Problem:** Edges create an uncontrolled cycle (no loop controls).
 
-**Solution:** Remove edge that creates cycle. Graphs must be acyclic (DAGs).
+**Solution:** Mark cycle edges as controlled loops with `is_loop_edge=True` and add controls.
 
 ```python
-# ❌ Wrong: Creates cycle
+# ❌ Wrong: Uncontrolled cycle
 graph.add_edge("A", "B")
 graph.add_edge("B", "C")
-graph.add_edge("C", "A")  # Cycle!
+graph.add_edge("C", "A")  # Error: uncontrolled cycle!
 
-# ✅ Correct: Acyclic
+# ✅ Correct: Controlled loop with max_iterations
 graph.add_edge("A", "B")
 graph.add_edge("B", "C")
+graph.add_edge(
+    "C",
+    "A",
+    is_loop_edge=True,
+    max_iterations=10
+)
+
+# ✅ Correct: Controlled loop with condition
+graph.add_edge("A", "B")
+graph.add_edge("B", "C")
+graph.add_edge(
+    "C",
+    "A",
+    is_loop_edge=True,
+    loop_condition=lambda state, output: not output.get("done", False),
+    max_iterations=50  # Optional safety limit
+)
 ```
 
 ### "Orphaned nodes detected"

@@ -134,17 +134,49 @@ class StateGraph:
         self._nodes[node_id] = node
         return self
 
-    def add_edge(self, source: str, target: str) -> "StateGraph":
+    def add_edge(
+        self,
+        source: str,
+        target: str,
+        is_loop_edge: bool = False,
+        loop_condition: Optional[Any] = None,
+        max_iterations: Optional[int] = None,
+    ) -> "StateGraph":
         """Add a direct edge between two nodes.
 
         Args:
             source: Source node ID
             target: Target node ID
+            is_loop_edge: Whether this edge is part of a cycle (allows controlled loops)
+            loop_condition: Callable (state, output) -> bool to continue loop
+            max_iterations: Maximum iterations for this loop edge
 
         Returns:
             Self for method chaining
+
+        Example:
+            >>> # Regular edge
+            >>> graph.add_edge("START", "agent")
+
+            >>> # Loop edge with condition
+            >>> graph.add_edge("check", "process",
+            ...     is_loop_edge=True,
+            ...     loop_condition=lambda state, output: state.get("count", 0) < 10)
+
+            >>> # Loop edge with max iterations
+            >>> graph.add_edge("check", "process",
+            ...     is_loop_edge=True,
+            ...     max_iterations=100)
         """
-        self._edges.append(Edge(source=source, target=target))
+        self._edges.append(
+            Edge(
+                source=source,
+                target=target,
+                is_loop_edge=is_loop_edge,
+                loop_condition=loop_condition,
+                max_iterations=max_iterations,
+            )
+        )
         return self
 
     def add_conditional_edges(

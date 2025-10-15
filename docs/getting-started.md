@@ -339,7 +339,7 @@ async for event in executor.execute(input, context):
 Common issues:
 - No entry point set: call `graph.set_entry_point("node_id")`
 - Disconnected nodes: all nodes must connect to START
-- Cycles detected: graphs must be acyclic (no loops back to earlier nodes)
+- Uncontrolled cycles detected: mark loop edges with `is_loop_edge=True` and add `max_iterations` or `loop_condition`
 
 ## Getting Help
 

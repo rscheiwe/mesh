@@ -294,6 +294,21 @@ class Executor:
             if child_id in ignore_nodes:
                 continue
 
+            # Check if this edge is a loop edge with conditions
+            edge = self._get_edge(node_id, child_id)
+            if edge and edge.is_loop_edge:
+                # Check loop conditions
+                should_continue = await self._should_continue_loop(
+                    edge=edge,
+                    node_id=node_id,
+                    child_id=child_id,
+                    result=result,
+                    context=context,
+                )
+                if not should_continue:
+                    # Loop condition not met or max iterations reached - skip this edge
+                    continue
+
             # Get parent dependencies for this child
             parent_ids = self.graph.get_parents(child_id)
 
@@ -375,6 +390,68 @@ class Executor:
                     ignore_nodes.add(target)
 
         return ignore_nodes
+
+    def _get_edge(self, source: str, target: str):
+        """Get edge between two nodes.
+
+        Args:
+            source: Source node ID
+            target: Target node ID
+
+        Returns:
+            Edge if found, None otherwise
+        """
+        for edge in self.graph.edges:
+            if edge.source == source and edge.target == target:
+                return edge
+        return None
+
+    async def _should_continue_loop(
+        self,
+        edge,
+        node_id: str,
+        child_id: str,
+        result: Any,
+        context: ExecutionContext,
+    ) -> bool:
+        """Check if a loop edge should be followed.
+
+        Evaluates loop conditions and max iteration limits.
+
+        Args:
+            edge: The loop edge
+            node_id: Source node ID
+            child_id: Target node ID
+            result: Node result
+            context: Execution context
+
+        Returns:
+            True if loop should continue, False otherwise
+        """
+        edge_key = f"{node_id}->{child_id}"
+
+        # Check max iterations first
+        if edge.max_iterations is not None:
+            current_iteration = context.get_loop_iteration(edge_key)
+            if current_iteration >= edge.max_iterations:
+                # Max iterations reached
+                return False
+
+        # Check loop condition if provided
+        if edge.loop_condition is not None:
+            try:
+                # Call condition: condition(state, output) -> bool
+                should_continue = edge.loop_condition(context.state, result.output)
+                if not should_continue:
+                    # Condition returned False - exit loop
+                    return False
+            except Exception as e:
+                # Condition evaluation failed - exit loop for safety
+                return False
+
+        # Increment iteration count
+        context.increment_loop_iteration(edge_key)
+        return True
 
     def _has_all_inputs(self, waiting_node: WaitingNode) -> bool:
         """Check if a waiting node has received all expected inputs.

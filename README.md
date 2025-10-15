@@ -24,14 +24,14 @@ Comprehensive guides and API reference:
 - **[Getting Started](https://rscheiwe.github.io/mesh/getting-started)** - Installation and configuration
 - **[Quick Start](https://rscheiwe.github.io/mesh/quick-start)** - Build your first graph in 5 minutes
 - **[Core Concepts](https://rscheiwe.github.io/mesh/concepts/graphs)** - Graphs, nodes, execution, events
-- **[Guides](https://rscheiwe.github.io/mesh/guides/streaming)** - Streaming, state management, variables
+- **[Guides](https://rscheiwe.github.io/mesh/guides/streaming)** - Streaming, loops, state management, variables
 - **[Integrations](https://rscheiwe.github.io/mesh/integrations/vel)** - Vel, OpenAI Agents SDK
 - **[API Reference](https://rscheiwe.github.io/mesh/api-reference)** - Complete API documentation
 - **[Examples](https://rscheiwe.github.io/mesh/examples)** - Working code examples
 
 ## Features
 
-- **Graph-Based Workflows**: Build agent workflows as directed acyclic graphs (DAGs)
+- **Graph-Based Workflows**: Build agent workflows as directed graphs with controlled cycles
 - **Dual API**: Programmatic (LangGraph-style) and declarative (React Flow JSON) interfaces
 - **Token-by-Token Streaming**: Real-time streaming with provider-agnostic events
 - **Event Translation**: Use Vel's standardized events or provider-native events

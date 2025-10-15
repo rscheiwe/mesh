@@ -21,7 +21,7 @@ Mesh is built around several core concepts that work together to create powerful
 ## Quick Summary
 
 ### Graphs
-Directed acyclic graphs (DAGs) that define workflow structure and execution flow.
+Directed graphs with controlled cycles that define workflow structure and execution flow.
 
 ### Nodes
 Seven types of nodes that perform specific tasks: Start, End, Agent, LLM, Tool, Condition, and Loop.

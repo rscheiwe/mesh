@@ -1,7 +1,7 @@
 """Core graph data structures for Mesh.
 
-This module implements the directed acyclic graph (DAG) structures that represent
-agent workflows. Based on Flowise's constructGraphs() pattern.
+This module implements the directed graph structures with controlled cycles that
+represent agent workflows. Based on Flowise's constructGraphs() pattern.
 """
 
 from dataclasses import dataclass, field
@@ -15,12 +15,23 @@ if TYPE_CHECKING:
 
 
 class Edge(BaseModel):
-    """Represents a directed connection between two nodes in the graph."""
+    """Represents a directed connection between two nodes in the graph.
+
+    Supports controlled cycles via loop conditions and max iterations.
+    """
 
     source: str
     target: str
     source_handle: Optional[str] = None
     target_handle: Optional[str] = None
+
+    # Loop control for cycles
+    is_loop_edge: bool = False  # Marks this edge as part of a cycle
+    loop_condition: Optional[Any] = None  # Callable: (state, output) -> bool to continue
+    max_iterations: Optional[int] = None  # Max times this edge can be followed
+
+    class Config:
+        arbitrary_types_allowed = True  # Allow callables in loop_condition
 
     def __hash__(self):
         return hash((self.source, self.target, self.source_handle, self.target_handle))
@@ -92,7 +103,12 @@ class ExecutionGraph:
                     f"Edge references non-existent target node: {edge.target}"
                 )
 
-            dependencies[edge.target].add(edge.source)
+            # Loop edges are not dependencies - they're optional back-edges
+            # Only add non-loop edges to dependencies to avoid deadlock
+            if not edge.is_loop_edge:
+                dependencies[edge.target].add(edge.source)
+
+            # Add to children for execution routing (including loop edges)
             if edge.target not in children[edge.source]:
                 children[edge.source].append(edge.target)
 
@@ -113,9 +129,10 @@ class ExecutionGraph:
         """Validate graph topology.
 
         Checks for:
-        - Cycles (DAG requirement)
+        - Controlled cycles (uncontrolled cycles are errors)
         - At least one starting node
         - All nodes are reachable from starting nodes
+        - Loop edges have proper controls (condition or max_iterations)
 
         Raises:
             GraphValidationError: If validation fails
@@ -124,31 +141,55 @@ class ExecutionGraph:
         if not self.starting_nodes:
             raise GraphValidationError("Graph has no starting nodes (all nodes have dependencies)")
 
-        # Detect cycles using DFS
+        # Validate loop edges have controls
+        for edge in self.edges:
+            if edge.is_loop_edge:
+                if edge.loop_condition is None and edge.max_iterations is None:
+                    raise GraphValidationError(
+                        f"Loop edge {edge.source} -> {edge.target} must have "
+                        f"either loop_condition or max_iterations specified"
+                    )
+
+        # Detect uncontrolled cycles using DFS
+        # Controlled cycles (marked with is_loop_edge) are allowed
         visited: Set[str] = set()
         rec_stack: Set[str] = set()
 
-        def has_cycle(node_id: str) -> bool:
-            """DFS helper to detect cycles."""
+        def has_uncontrolled_cycle(node_id: str, path: List[str]) -> bool:
+            """DFS helper to detect uncontrolled cycles."""
             visited.add(node_id)
             rec_stack.add(node_id)
+            path.append(node_id)
 
             # Visit all children
             for child_id in self.children.get(node_id, []):
-                if child_id not in visited:
-                    if has_cycle(child_id):
-                        return True
-                elif child_id in rec_stack:
-                    return True
+                # Check if this edge is a controlled loop edge
+                edge_is_controlled = any(
+                    e.source == node_id and e.target == child_id and e.is_loop_edge
+                    for e in self.edges
+                )
 
+                if child_id not in visited:
+                    if has_uncontrolled_cycle(child_id, path):
+                        return True
+                elif child_id in rec_stack and not edge_is_controlled:
+                    # Found uncontrolled cycle
+                    cycle_start = path.index(child_id)
+                    cycle = " -> ".join(path[cycle_start:] + [child_id])
+                    raise CycleDetectedError(
+                        f"Graph contains an uncontrolled cycle: {cycle}. "
+                        f"Mark cycle edges with is_loop_edge=True and add loop controls."
+                    )
+
+            path.pop()
             rec_stack.remove(node_id)
             return False
 
-        # Check for cycles starting from each starting node
+        # Check for uncontrolled cycles starting from each starting node
         for start_node in self.starting_nodes:
             if start_node not in visited:
-                if has_cycle(start_node):
-                    raise CycleDetectedError("Graph contains a cycle")
+                if has_uncontrolled_cycle(start_node, []):
+                    raise CycleDetectedError("Graph contains an uncontrolled cycle")
 
         # Check that all nodes are reachable from starting nodes
         reachable = self._get_reachable_nodes()
