@@ -64,6 +64,18 @@ Run it:
 python simple_llm.py
 ```
 
+### Visualize Your Graph
+
+Before running, visualize the graph structure:
+
+```python
+# Generate Mermaid diagram
+graph.save_visualization(title="my_first_graph")
+# Saves to: mesh/visualizations/my_first_graph_{timestamp}.png
+```
+
+This creates a diagram showing your graph's structure with color-coded nodes. See the [Visualization Guide](guides/visualization) for more details.
+
 ## Common Patterns
 
 ### Pattern 1: Simple LLM Chain
