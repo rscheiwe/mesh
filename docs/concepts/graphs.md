@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Graphs
-parent: Core Concepts
+parent: Concepts
 nav_order: 1
 ---
 

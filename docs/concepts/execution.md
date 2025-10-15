@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Execution
-parent: Core Concepts
+parent: Concepts
 nav_order: 3
 ---
 

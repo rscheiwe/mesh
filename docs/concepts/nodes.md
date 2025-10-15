@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Nodes
-parent: Core Concepts
+parent: Concepts
 nav_order: 2
 ---
 
