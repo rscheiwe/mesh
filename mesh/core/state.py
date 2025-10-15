@@ -1,0 +1,168 @@
+"""State management for graph execution.
+
+This module provides state tracking and persistence coordination during execution.
+"""
+
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
+import uuid
+
+
+@dataclass
+class ExecutionContext:
+    """Runtime context passed to nodes during execution.
+
+    This contains all the information needed by nodes to execute properly,
+    including graph state, variables, chat history, and iteration context.
+
+    Attributes:
+        graph_id: Identifier for the graph being executed
+        session_id: Session identifier for state persistence
+        chat_history: List of chat messages
+        variables: Global variables accessible via {{$vars.*}}
+        state: Mutable state dictionary
+        iteration_context: Context for loop iterations
+        trace_id: Unique identifier for this execution trace
+        executed_data: List of node execution results
+    """
+
+    graph_id: str
+    session_id: str
+    chat_history: List[Dict[str, str]] = field(default_factory=list)
+    variables: Dict[str, Any] = field(default_factory=dict)
+    state: Dict[str, Any] = field(default_factory=dict)
+    iteration_context: Optional[Dict[str, Any]] = None
+    trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    executed_data: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Event emitter reference (set by executor)
+    _event_emitter: Optional[Any] = field(default=None, repr=False)
+
+    async def emit_event(self, event: Any) -> None:
+        """Emit an event through the execution context.
+
+        Args:
+            event: ExecutionEvent to emit
+        """
+        if self._event_emitter:
+            await self._event_emitter.emit(event)
+
+    def set_iteration_context(
+        self, index: int, value: Any, total: int
+    ) -> None:
+        """Set iteration context for loop execution.
+
+        Args:
+            index: Current iteration index (0-based)
+            value: Current iteration value
+            total: Total number of iterations
+        """
+        self.iteration_context = {
+            "index": index,
+            "value": value,
+            "is_first": index == 0,
+            "is_last": index == total - 1,
+            "total": total,
+        }
+
+    def clear_iteration_context(self) -> None:
+        """Clear iteration context after loop completion."""
+        self.iteration_context = None
+
+    def add_executed_node(self, node_id: str, output: Any, status: str = "FINISHED") -> None:
+        """Record a node execution result.
+
+        Args:
+            node_id: ID of the executed node
+            output: Output from the node
+            status: Execution status
+        """
+        self.executed_data.append(
+            {
+                "node_id": node_id,
+                "output": output,
+                "status": status,
+                "timestamp": None,  # Could add timestamp if needed
+            }
+        )
+
+    def get_node_output(self, node_id: str) -> Optional[Any]:
+        """Get the output of a previously executed node.
+
+        Args:
+            node_id: ID of the node
+
+        Returns:
+            Node output or None if not found
+        """
+        # Search in reverse to get most recent execution (important for loops)
+        for exec_data in reversed(self.executed_data):
+            if exec_data["node_id"] == node_id:
+                return exec_data.get("output")
+        return None
+
+
+class StateManager:
+    """Manager for execution state and persistence.
+
+    This class coordinates state management during execution, including
+    loading initial state, tracking updates, and persisting final state.
+    """
+
+    def __init__(self, backend: Optional[Any] = None):
+        """Initialize state manager.
+
+        Args:
+            backend: StateBackend instance for persistence
+        """
+        self.backend = backend
+
+    async def load_state(self, session_id: str) -> Dict[str, Any]:
+        """Load state for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            State dictionary
+        """
+        if self.backend:
+            state = await self.backend.load(session_id)
+            return state if state is not None else {}
+        return {}
+
+    async def save_state(self, session_id: str, state: Dict[str, Any]) -> None:
+        """Save state for a session.
+
+        Args:
+            session_id: Session identifier
+            state: State dictionary to save
+        """
+        if self.backend:
+            await self.backend.save(session_id, state)
+
+    async def update_state(
+        self, session_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Update state with new values.
+
+        Args:
+            session_id: Session identifier
+            updates: Dictionary of updates to apply
+
+        Returns:
+            Updated state dictionary
+        """
+        state = await self.load_state(session_id)
+        state.update(updates)
+        await self.save_state(session_id, state)
+        return state
+
+    async def delete_state(self, session_id: str) -> None:
+        """Delete state for a session.
+
+        Args:
+            session_id: Session identifier
+        """
+        if self.backend:
+            await self.backend.delete(session_id)

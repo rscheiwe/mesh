@@ -1,0 +1,56 @@
+{
+  "nodes": [
+    {
+      "id": "start_0",
+      "type": "startAgentflow",
+      "data": {
+        "name": "startAgentflow",
+        "label": "Start",
+        "inputs": {}
+      },
+      "position": {
+        "x": 100,
+        "y": 100
+      }
+    },
+    {
+      "id": "llm_0",
+      "type": "llmAgentflow",
+      "data": {
+        "name": "llmAgentflow",
+        "label": "Research Assistant",
+        "inputs": {
+          "model": "gpt-4",
+          "systemPrompt": "You are a research assistant. Provide accurate, well-researched responses."
+        }
+      },
+      "position": {
+        "x": 300,
+        "y": 100
+      }
+    },
+    {
+      "id": "end_0",
+      "type": "endAgentflow",
+      "data": {
+        "name": "endAgentflow",
+        "label": "End",
+        "inputs": {}
+      },
+      "position": {
+        "x": 500,
+        "y": 100
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "start_0",
+      "target": "llm_0"
+    },
+    {
+      "source": "llm_0",
+      "target": "end_0"
+    }
+  ]
+}

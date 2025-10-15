@@ -1,0 +1,40 @@
+// Custom navigation separator before API Reference section
+.side-bar nav > ul > li:nth-child(10) {
+  border-top: 2px solid rgba(0, 0, 0, 0.15);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+// Style for nested child pages in sidebar
+.side-bar nav ul ul li a {
+  font-size: 13px !important;
+}
+
+// Grid layout for documentation cards on homepage
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.grid-item {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 1.5rem;
+  transition: box-shadow 0.2s ease;
+}
+
+.grid-item:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.grid-item h3 {
+  margin-top: 0;
+  font-size: 1.25rem;
+}
+
+.grid-item p {
+  margin-bottom: 0;
+  color: #666;
+}
