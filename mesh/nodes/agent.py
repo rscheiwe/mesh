@@ -12,6 +12,7 @@ from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
 from mesh.core.events import ExecutionEvent, EventType, VelEventTranslator, OpenAIEventTranslator
 from mesh.utils.variables import VariableResolver
+from mesh.utils.translator_orchestrator import TranslatorOrchestrator
 
 
 class AgentNode(BaseNode):
@@ -491,11 +492,12 @@ class AgentNode(BaseNode):
         message: str,
         context: ExecutionContext,
     ) -> NodeResult:
-        """Execute OpenAI Agents SDK agent with Vel event translation.
+        """Execute OpenAI Agents SDK agent with Vel event translation and orchestration.
 
         This uses the actual OpenAI Agents SDK (Runner.run_streamed) and translates
         its native events to Vel's standardized stream protocol format using Vel's
-        SDK event translator.
+        SDK event translator. The TranslatorOrchestrator fills event gaps (start-step,
+        finish-step) to properly track multi-step execution.
 
         Args:
             message: Input message
@@ -514,6 +516,8 @@ class AgentNode(BaseNode):
             )
 
         full_response = ""
+        total_usage = {}
+        steps_completed = 0
 
         # Execute agent with native SDK
         result = Runner.run_streamed(
@@ -521,20 +525,62 @@ class AgentNode(BaseNode):
             message,
         )
 
-        # Stream and translate events
-        async for native_event in result.stream_events():
-            # Translate native event to Vel format
-            vel_event = self.vel_sdk_translator.translate(native_event)
+        # Wrap with orchestrator to fill event gaps
+        orchestrator = TranslatorOrchestrator(self.vel_sdk_translator, max_steps=10)
 
-            if not vel_event:
-                # Event was skipped (e.g., agent_updated_stream_event)
-                continue
-
-            # Convert Vel event to Mesh ExecutionEvent
-            event_dict = vel_event.to_dict()
+        # Stream orchestrated events (includes start-step, finish-step, etc.)
+        async for event_dict in orchestrator.stream(
+            result.stream_events(),
+            emit_start=False,  # Mesh executor already emits NODE_START
+        ):
             event_type = event_dict.get("type", "")
 
-            if event_type == "text-start":
+            # Handle orchestration events (step boundaries)
+            if event_type == "start":
+                # Execution start (orchestrator emits this)
+                # We don't need to emit anything - executor handles this
+                pass
+
+            elif event_type == "start-step":
+                # Step begins
+                step_index = event_dict.get("stepIndex", 0)
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.STEP_START,
+                        node_id=self.id,
+                        metadata={"step_index": step_index},
+                    )
+                )
+
+            elif event_type == "finish-step":
+                # Step completes with metadata
+                step_index = event_dict.get("stepIndex", 0)
+                finish_reason = event_dict.get("finishReason", "stop")
+                usage = event_dict.get("usage")
+                response_meta = event_dict.get("response")
+
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.STEP_COMPLETE,
+                        node_id=self.id,
+                        metadata={
+                            "step_index": step_index,
+                            "finish_reason": finish_reason,
+                            "usage": usage,
+                            "response": response_meta,
+                            "had_tool_calls": event_dict.get("hadToolCalls", False),
+                        },
+                    )
+                )
+                steps_completed = step_index + 1
+
+            elif event_type == "finish":
+                # Overall execution complete
+                total_usage = event_dict.get("totalUsage", {})
+                # We don't emit anything here - executor will emit NODE_COMPLETE
+
+            # Handle content events
+            elif event_type == "text-start":
                 # Text block starts
                 await context.emit_event(
                     ExecutionEvent(
@@ -624,17 +670,6 @@ class AgentNode(BaseNode):
                     )
                 )
 
-            elif event_type == "finish-message":
-                # Message generation complete
-                finish_reason = event_dict.get("finishReason", "unknown")
-                await context.emit_event(
-                    ExecutionEvent(
-                        type=EventType.MESSAGE_COMPLETE,
-                        node_id=self.id,
-                        metadata={"finish_reason": finish_reason},
-                    )
-                )
-
             elif event_type == "error":
                 # Error occurred
                 error_msg = event_dict.get("error", "Unknown error")
@@ -660,7 +695,9 @@ class AgentNode(BaseNode):
             metadata={
                 "agent_type": "openai",
                 "agent_name": self.agent.name,
-                "event_translation": "vel",
+                "event_translation": "vel_orchestrated",
+                "steps_completed": steps_completed,
+                "total_usage": total_usage,
             },
         )
 

@@ -4,7 +4,7 @@
 
 # Mesh: Python Agent Graph Orchestration Engine
 
-**Build multi-agent workflows as executable graphs**
+**Build agent and multi-agent workflows as executable graphs**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)

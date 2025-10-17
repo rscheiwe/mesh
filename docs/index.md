@@ -7,9 +7,10 @@ permalink: /
 ---
 
 # Mesh Agent Graph Orchestration
+
 {: .fs-9 }
 
-Build multi-agent workflows as executable graphs with token-by-token streaming, state management, and seamless integration with Vel and OpenAI Agents SDK.
+Build agent and multi-agent workflows as executable graphs with token-by-token streaming, state management, and seamless integration with Vel and OpenAI Agents SDK.
 {: .fs-6 .fw-300 }
 
 [Get started now](getting-started){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
@@ -288,6 +289,7 @@ Mesh is distributed under the [MIT License](https://github.com/rscheiwe/mesh/blo
 ## Credits
 
 Inspired by:
+
 - [Flowise](https://github.com/FlowiseAI/Flowise) - React Flow execution patterns
 - [LangGraph](https://github.com/langchain-ai/langgraph) - StateGraph API design
 - [Vel](https://github.com/rscheiwe/vel) - Event translation layer

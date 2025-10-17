@@ -31,6 +31,10 @@ class EventType(str, Enum):
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_COMPLETE = "tool_call_complete"
 
+    # Step execution (for multi-step agents)
+    STEP_START = "step_start"
+    STEP_COMPLETE = "step_complete"
+
     # State updates
     STATE_UPDATE = "state_update"
 
