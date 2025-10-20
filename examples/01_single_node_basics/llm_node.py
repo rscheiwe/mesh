@@ -25,7 +25,7 @@ async def main():
         "llm",
         None,  # No agent instance needed for LLM node
         node_type="llm",
-        model="gpt-4",
+        model="gpt-4o",
         system_prompt="You are a helpful assistant. Keep responses concise.",
     )
 
@@ -52,15 +52,10 @@ async def main():
 
     # Execute with streaming
     print("Executing graph...\n")
-    print("Response: ", end="", flush=True)
+    # print("Response: ", end="", flush=True)
 
-    async for event in executor.execute("What is 2+2?", context):
-        if event.type == "token":
-            # Print tokens as they arrive
-            print(event.content, end="", flush=True)
-        elif event.type == "execution_complete":
-            print(f"Final output: {event.output}")
-            print(f"\n\nExecution complete!")
+    async for event in executor.execute("what is the capital of France?", context):
+        print(event.__dict__)
 
 
 if __name__ == "__main__":

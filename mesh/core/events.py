@@ -38,6 +38,23 @@ class EventType(str, Enum):
     # State updates
     STATE_UPDATE = "state_update"
 
+    # Reasoning (o1/o3/Claude Extended Thinking)
+    REASONING_START = "reasoning_start"
+    REASONING_TOKEN = "reasoning_token"
+    REASONING_END = "reasoning_end"
+
+    # Metadata (usage, timing, model info)
+    RESPONSE_METADATA = "response_metadata"
+
+    # Sources and citations (Gemini grounding, RAG)
+    SOURCE = "source"
+
+    # File attachments (multi-modal)
+    FILE = "file"
+
+    # Custom data events (extensibility)
+    CUSTOM_DATA = "custom_data"
+
 
 @dataclass
 class ExecutionEvent:
@@ -45,6 +62,9 @@ class ExecutionEvent:
 
     This event format is compatible with Vel's event system and can be
     translated to/from OpenAI, Anthropic, and other provider formats.
+
+    The raw_event field preserves the original event (Vel event dict or
+    native provider event) for debugging and accessing provider-specific fields.
     """
 
     type: EventType
@@ -54,10 +74,11 @@ class ExecutionEvent:
     error: Optional[str] = None
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    raw_event: Optional[Any] = None  # Original vanilla event (Vel dict or native object)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert event to dictionary for serialization."""
-        return {
+        result = {
             "type": self.type.value if isinstance(self.type, EventType) else self.type,
             "node_id": self.node_id,
             "content": self.content,
@@ -66,6 +87,16 @@ class ExecutionEvent:
             "timestamp": self.timestamp.isoformat(),
             "metadata": self.metadata,
         }
+
+        # Include raw_event if present (for dict/serializable types)
+        if self.raw_event is not None:
+            if isinstance(self.raw_event, dict):
+                result["raw_event"] = self.raw_event
+            else:
+                # For non-dict objects, include type info
+                result["raw_event_type"] = type(self.raw_event).__name__
+
+        return result
 
 
 class EventEmitter:
@@ -112,107 +143,3 @@ class EventEmitter:
     def clear(self) -> None:
         """Remove all event listeners."""
         self._listeners.clear()
-
-
-class VelEventTranslator:
-    """Translator for Vel SDK events.
-
-    This class provides methods to translate between Vel events and
-    Mesh ExecutionEvent format. It will use Vel's event translation
-    when the Vel SDK is available.
-    """
-
-    def __init__(self):
-        self._vel_available = False
-        try:
-            # Try to import Vel SDK
-            import vel  # noqa: F401
-
-            self._vel_available = True
-        except ImportError:
-            pass
-
-    def is_available(self) -> bool:
-        """Check if Vel SDK is available."""
-        return self._vel_available
-
-    def from_vel_event(self, vel_event: Any) -> ExecutionEvent:
-        """Convert Vel event to Mesh ExecutionEvent.
-
-        Args:
-            vel_event: Event from Vel SDK
-
-        Returns:
-            ExecutionEvent in Mesh format
-        """
-        if not self._vel_available:
-            raise RuntimeError("Vel SDK is not installed")
-
-        # Vel event translation logic
-        # This will be implemented based on actual Vel SDK event format
-        event_type = self._map_vel_event_type(vel_event)
-        return ExecutionEvent(
-            type=event_type,
-            content=getattr(vel_event, "content", None),
-            metadata=getattr(vel_event, "metadata", {}),
-        )
-
-    def _map_vel_event_type(self, vel_event: Any) -> EventType:
-        """Map Vel event type to Mesh EventType."""
-        # This mapping will be based on Vel SDK's event types
-        vel_type = getattr(vel_event, "type", "unknown")
-
-        mapping = {
-            "token": EventType.TOKEN,
-            "message_start": EventType.MESSAGE_START,
-            "message_complete": EventType.MESSAGE_COMPLETE,
-            "tool_call_start": EventType.TOOL_CALL_START,
-            "tool_call_complete": EventType.TOOL_CALL_COMPLETE,
-            "error": EventType.EXECUTION_ERROR,
-        }
-
-        return mapping.get(vel_type, EventType.NODE_COMPLETE)
-
-
-class OpenAIEventTranslator:
-    """Translator for OpenAI SDK events."""
-
-    @staticmethod
-    def from_openai_chunk(chunk: Any) -> ExecutionEvent:
-        """Convert OpenAI streaming chunk to Mesh ExecutionEvent.
-
-        Args:
-            chunk: Chunk from OpenAI streaming response
-
-        Returns:
-            ExecutionEvent in Mesh format
-        """
-        content = ""
-        if hasattr(chunk, "choices") and chunk.choices:
-            delta = chunk.choices[0].delta
-            if hasattr(delta, "content") and delta.content:
-                content = delta.content
-
-        return ExecutionEvent(
-            type=EventType.TOKEN,
-            content=content,
-            metadata={"provider": "openai"},
-        )
-
-    @staticmethod
-    def from_openai_delta(delta: Any) -> ExecutionEvent:
-        """Convert OpenAI Assistants SDK delta to Mesh ExecutionEvent.
-
-        Args:
-            delta: Delta from OpenAI Assistants streaming
-
-        Returns:
-            ExecutionEvent in Mesh format
-        """
-        content = getattr(delta, "value", "")
-
-        return ExecutionEvent(
-            type=EventType.TOKEN,
-            content=content,
-            metadata={"provider": "openai_assistants"},
-        )

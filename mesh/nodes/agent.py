@@ -10,7 +10,7 @@ import os
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
-from mesh.core.events import ExecutionEvent, EventType, VelEventTranslator, OpenAIEventTranslator
+from mesh.core.events import ExecutionEvent, EventType
 from mesh.utils.variables import VariableResolver
 from mesh.utils.translator_orchestrator import TranslatorOrchestrator
 
@@ -75,11 +75,8 @@ class AgentNode(BaseNode):
                 # Vel not available, use native events
                 self.use_native_events = True
 
-        # Initialize legacy event translators (for backwards compatibility)
-        if self.agent_type == "vel":
-            self.event_translator = VelEventTranslator()
-        else:
-            self.event_translator = OpenAIEventTranslator()
+        # Note: Vel agents don't need translators - they already emit Vel protocol.
+        # Only non-Vel agents (OpenAI Agents SDK, etc.) need translation.
 
     def _detect_agent_type(self, agent: Any) -> str:
         """Determine if agent is Vel or OpenAI Agents SDK.
@@ -190,6 +187,7 @@ class AgentNode(BaseNode):
                                 type=EventType.MESSAGE_START,
                                 node_id=self.id,
                                 metadata={"message_id": event.get("messageId")},
+                                raw_event=event,
                             )
                         )
 
@@ -200,6 +198,7 @@ class AgentNode(BaseNode):
                                 type=EventType.MESSAGE_START,
                                 node_id=self.id,
                                 metadata={"text_block_id": event.get("id")},
+                            raw_event=event,
                             )
                         )
 
@@ -214,6 +213,7 @@ class AgentNode(BaseNode):
                                     node_id=self.id,
                                     content=delta,
                                     metadata={"text_block_id": event.get("id")},
+                                raw_event=event,
                                 )
                             )
 
@@ -224,6 +224,7 @@ class AgentNode(BaseNode):
                                 type=EventType.MESSAGE_COMPLETE,
                                 node_id=self.id,
                                 metadata={"text_block_id": event.get("id")},
+                            raw_event=event,
                             )
                         )
 
@@ -237,6 +238,7 @@ class AgentNode(BaseNode):
                                     "tool_call_id": event.get("toolCallId"),
                                     "tool_name": event.get("toolName"),
                                 },
+                            raw_event=event,
                             )
                         )
 
@@ -253,6 +255,7 @@ class AgentNode(BaseNode):
                                         "tool_call_id": event.get("toolCallId"),
                                         "event_subtype": "tool_input",
                                     },
+                                raw_event=event,
                                 )
                             )
 
@@ -267,6 +270,7 @@ class AgentNode(BaseNode):
                                     "tool_name": event.get("toolName"),
                                     "input": event.get("input"),
                                 },
+                            raw_event=event,
                             )
                         )
 
@@ -280,6 +284,7 @@ class AgentNode(BaseNode):
                                 metadata={
                                     "tool_call_id": event.get("toolCallId"),
                                 },
+                            raw_event=event,
                             )
                         )
 
@@ -291,6 +296,7 @@ class AgentNode(BaseNode):
                                 type=EventType.MESSAGE_COMPLETE,
                                 node_id=self.id,
                                 metadata={"finish_reason": finish_reason},
+                            raw_event=event,
                             )
                         )
 
@@ -302,9 +308,161 @@ class AgentNode(BaseNode):
                                 type=EventType.NODE_ERROR,
                                 node_id=self.id,
                                 error=error_msg,
+                            raw_event=event,
                             )
                         )
                         raise RuntimeError(f"Vel agent error: {error_msg}")
+
+                    elif event_type == "start-step":
+                        # Step begins (multi-step execution)
+                        step_index = event.get("stepIndex", 0)
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.STEP_START,
+                                node_id=self.id,
+                                metadata={"step_index": step_index},
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "finish-step":
+                        # Step completes with usage and metadata
+                        step_index = event.get("stepIndex", 0)
+                        finish_reason = event.get("finishReason", "stop")
+                        usage = event.get("usage")
+                        response_meta = event.get("response")
+
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.STEP_COMPLETE,
+                                node_id=self.id,
+                                metadata={
+                                    "step_index": step_index,
+                                    "finish_reason": finish_reason,
+                                    "usage": usage,
+                                    "response": response_meta,
+                                    "had_tool_calls": event.get("hadToolCalls", False),
+                                },
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "finish":
+                        # Overall generation complete
+                        finish_reason = event.get("finishReason", "stop")
+                        total_usage = event.get("totalUsage")
+
+                        # Emit as metadata event (executor will emit NODE_COMPLETE)
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.RESPONSE_METADATA,
+                                node_id=self.id,
+                                metadata={
+                                    "finish_reason": finish_reason,
+                                    "total_usage": total_usage,
+                                    "steps_completed": event.get("stepsCompleted"),
+                                    "event_subtype": "finish",
+                                },
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "reasoning-start":
+                        # Reasoning block starts (o1/o3/Claude Extended Thinking)
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.REASONING_START,
+                                node_id=self.id,
+                                metadata={"block_id": event.get("id")},
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "reasoning-delta":
+                        # Reasoning token streaming
+                        delta = event.get("delta", "")
+                        if delta:
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.REASONING_TOKEN,
+                                    node_id=self.id,
+                                    content=delta,
+                                    metadata={
+                                        "block_id": event.get("id"),
+                                        "event_subtype": "reasoning"
+                                    },
+                                raw_event=event,
+                                )
+                            )
+
+                    elif event_type == "reasoning-end":
+                        # Reasoning block completes
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.REASONING_END,
+                                node_id=self.id,
+                                metadata={"block_id": event.get("id")},
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "response-metadata":
+                        # Usage statistics, model info, timing
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.RESPONSE_METADATA,
+                                node_id=self.id,
+                                metadata={
+                                    "id": event.get("id"),
+                                    "model_id": event.get("modelId"),
+                                    "usage": event.get("usage"),
+                                    "timestamp": event.get("timestamp"),
+                                },
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "source":
+                        # Citations and grounding (Gemini)
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.SOURCE,
+                                node_id=self.id,
+                                metadata={"sources": event.get("sources", [])},
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type == "file":
+                        # File attachment (multi-modal)
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.FILE,
+                                node_id=self.id,
+                                metadata={
+                                    "name": event.get("name"),
+                                    "mime_type": event.get("mimeType"),
+                                    "content": event.get("content"),
+                                },
+                            raw_event=event,
+                            )
+                        )
+
+                    elif event_type.startswith("data-"):
+                        # Custom data events (passthrough)
+                        # Includes: data-*, data-rlm-*, etc.
+                        await context.emit_event(
+                            ExecutionEvent(
+                                type=EventType.CUSTOM_DATA,
+                                node_id=self.id,
+                                content=event.get("data"),
+                                metadata={
+                                    "data_type": event_type,
+                                    "transient": event.get("transient", False),
+                                },
+                            raw_event=event,
+                            )
+                        )
 
                     else:
                         # Unknown event type - log for debugging
@@ -320,6 +478,7 @@ class AgentNode(BaseNode):
                                 type=EventType.TOKEN,
                                 node_id=self.id,
                                 content=content,
+                            raw_event=event,
                             )
                         )
 
@@ -332,6 +491,7 @@ class AgentNode(BaseNode):
                                 type=EventType.TOKEN,
                                 node_id=self.id,
                                 content=content,
+                            raw_event=event,
                             )
                         )
 
@@ -342,6 +502,7 @@ class AgentNode(BaseNode):
                             type=EventType.TOKEN,
                             node_id=self.id,
                             content=event,
+                        raw_event=event,
                         )
                     )
 
@@ -416,6 +577,7 @@ class AgentNode(BaseNode):
                             type=EventType.TOKEN,
                             node_id=self.id,
                             content=delta,
+                        raw_event=event,
                         )
                     )
 
@@ -433,6 +595,7 @@ class AgentNode(BaseNode):
                                     type=EventType.MESSAGE_COMPLETE,
                                     node_id=self.id,
                                     metadata={"item_id": getattr(item, "id", None)},
+                                raw_event=event,
                                 )
                             )
 
@@ -450,6 +613,7 @@ class AgentNode(BaseNode):
                                         "tool_name": tool_name,
                                         "item_id": getattr(item, "id", None),
                                     },
+                                raw_event=event,
                                 )
                             )
                         elif item.status == "completed":
@@ -462,6 +626,7 @@ class AgentNode(BaseNode):
                                         "tool_name": tool_name,
                                         "item_id": getattr(item, "id", None),
                                     },
+                                raw_event=event,
                                 )
                             )
 
@@ -538,8 +703,15 @@ class AgentNode(BaseNode):
             # Handle orchestration events (step boundaries)
             if event_type == "start":
                 # Execution start (orchestrator emits this)
-                # We don't need to emit anything - executor handles this
-                pass
+                # Emit to preserve raw_event
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.MESSAGE_START,
+                        node_id=self.id,
+                        metadata={"message_id": event_dict.get("messageId")},
+                        raw_event=event_dict,
+                    )
+                )
 
             elif event_type == "start-step":
                 # Step begins
@@ -549,6 +721,7 @@ class AgentNode(BaseNode):
                         type=EventType.STEP_START,
                         node_id=self.id,
                         metadata={"step_index": step_index},
+                    raw_event=event_dict,
                     )
                 )
 
@@ -570,6 +743,7 @@ class AgentNode(BaseNode):
                             "response": response_meta,
                             "had_tool_calls": event_dict.get("hadToolCalls", False),
                         },
+                    raw_event=event_dict,
                     )
                 )
                 steps_completed = step_index + 1
@@ -577,7 +751,22 @@ class AgentNode(BaseNode):
             elif event_type == "finish":
                 # Overall execution complete
                 total_usage = event_dict.get("totalUsage", {})
-                # We don't emit anything here - executor will emit NODE_COMPLETE
+                finish_reason = event_dict.get("finishReason", "stop")
+
+                # Emit to preserve raw_event
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.RESPONSE_METADATA,
+                        node_id=self.id,
+                        metadata={
+                            "finish_reason": finish_reason,
+                            "total_usage": total_usage,
+                            "steps_completed": event_dict.get("stepsCompleted"),
+                            "event_subtype": "finish",
+                        },
+                        raw_event=event_dict,
+                    )
+                )
 
             # Handle content events
             elif event_type == "text-start":
@@ -587,6 +776,7 @@ class AgentNode(BaseNode):
                         type=EventType.MESSAGE_START,
                         node_id=self.id,
                         metadata={"text_block_id": event_dict.get("id")},
+                    raw_event=event_dict,
                     )
                 )
 
@@ -601,6 +791,7 @@ class AgentNode(BaseNode):
                             node_id=self.id,
                             content=delta,
                             metadata={"text_block_id": event_dict.get("id")},
+                        raw_event=event_dict,
                         )
                     )
 
@@ -611,6 +802,7 @@ class AgentNode(BaseNode):
                         type=EventType.MESSAGE_COMPLETE,
                         node_id=self.id,
                         metadata={"text_block_id": event_dict.get("id")},
+                    raw_event=event_dict,
                     )
                 )
 
@@ -624,6 +816,7 @@ class AgentNode(BaseNode):
                             "tool_call_id": event_dict.get("toolCallId"),
                             "tool_name": event_dict.get("toolName"),
                         },
+                    raw_event=event_dict,
                     )
                 )
 
@@ -640,6 +833,7 @@ class AgentNode(BaseNode):
                                 "tool_call_id": event_dict.get("toolCallId"),
                                 "event_subtype": "tool_input",
                             },
+                        raw_event=event_dict,
                         )
                     )
 
@@ -654,6 +848,7 @@ class AgentNode(BaseNode):
                             "tool_name": event_dict.get("toolName"),
                             "input": event_dict.get("input"),
                         },
+                    raw_event=event_dict,
                     )
                 )
 
@@ -667,6 +862,7 @@ class AgentNode(BaseNode):
                         metadata={
                             "tool_call_id": event_dict.get("toolCallId"),
                         },
+                    raw_event=event_dict,
                     )
                 )
 
@@ -678,9 +874,107 @@ class AgentNode(BaseNode):
                         type=EventType.NODE_ERROR,
                         node_id=self.id,
                         error=error_msg,
+                    raw_event=event_dict,
                     )
                 )
                 raise RuntimeError(f"OpenAI agent error: {error_msg}")
+
+            elif event_type == "reasoning-start":
+                # Reasoning block starts (o1/o3/Claude Extended Thinking)
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.REASONING_START,
+                        node_id=self.id,
+                        metadata={"block_id": event_dict.get("id")},
+                    raw_event=event_dict,
+                    )
+                )
+
+            elif event_type == "reasoning-delta":
+                # Reasoning token streaming
+                delta = event_dict.get("delta", "")
+                if delta:
+                    await context.emit_event(
+                        ExecutionEvent(
+                            type=EventType.REASONING_TOKEN,
+                            node_id=self.id,
+                            content=delta,
+                            metadata={
+                                "block_id": event_dict.get("id"),
+                                "event_subtype": "reasoning"
+                            },
+                        raw_event=event_dict,
+                        )
+                    )
+
+            elif event_type == "reasoning-end":
+                # Reasoning block completes
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.REASONING_END,
+                        node_id=self.id,
+                        metadata={"block_id": event_dict.get("id")},
+                    raw_event=event_dict,
+                    )
+                )
+
+            elif event_type == "response-metadata":
+                # Usage statistics, model info, timing
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.RESPONSE_METADATA,
+                        node_id=self.id,
+                        metadata={
+                            "id": event_dict.get("id"),
+                            "model_id": event_dict.get("modelId"),
+                            "usage": event_dict.get("usage"),
+                            "timestamp": event_dict.get("timestamp"),
+                        },
+                    raw_event=event_dict,
+                    )
+                )
+
+            elif event_type == "source":
+                # Citations and grounding (Gemini)
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.SOURCE,
+                        node_id=self.id,
+                        metadata={"sources": event_dict.get("sources", [])},
+                    raw_event=event_dict,
+                    )
+                )
+
+            elif event_type == "file":
+                # File attachment (multi-modal)
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.FILE,
+                        node_id=self.id,
+                        metadata={
+                            "name": event_dict.get("name"),
+                            "mime_type": event_dict.get("mimeType"),
+                            "content": event_dict.get("content"),
+                        },
+                    raw_event=event_dict,
+                    )
+                )
+
+            elif event_type.startswith("data-"):
+                # Custom data events (passthrough)
+                # Includes: data-*, data-rlm-*, etc.
+                await context.emit_event(
+                    ExecutionEvent(
+                        type=EventType.CUSTOM_DATA,
+                        node_id=self.id,
+                        content=event_dict.get("data"),
+                        metadata={
+                            "data_type": event_type,
+                            "transient": event_dict.get("transient", False),
+                        },
+                    raw_event=event_dict,
+                    )
+                )
 
         # If no streaming content was captured, try to get final output
         if not full_response and hasattr(result, "final_output"):
