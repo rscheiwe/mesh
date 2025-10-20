@@ -197,7 +197,7 @@ class LLMNode(BaseNode):
 
             # Handle orchestration events
             if event_type == "start":
-                # Generation started
+                # Generation started - emit as NODE_START with raw_event
                 await context.emit_event(
                     ExecutionEvent(
                         type=EventType.NODE_START,
@@ -423,11 +423,12 @@ class LLMNode(BaseNode):
 
             # Handle orchestration events
             if event_type == "start":
+                # Generation started - emit as NODE_START with raw_event
                 await context.emit_event(
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
-                        metadata={"provider": "anthropic"},
+                        metadata={"provider": "openai"},
                         raw_event=event_dict,
                     )
                 )
@@ -626,6 +627,7 @@ class LLMNode(BaseNode):
 
             # Handle orchestration events
             if event_type == "start":
+                # Generation started - emit as NODE_START with raw_event
                 await context.emit_event(
                     ExecutionEvent(
                         type=EventType.NODE_START,

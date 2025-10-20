@@ -140,16 +140,20 @@ class Executor:
             iteration += 1
             current = queue.pop(0)
 
-            # Emit node start event
-            yield ExecutionEvent(
-                type=EventType.NODE_START,
-                node_id=current.node_id,
-                timestamp=datetime.now(),
-            )
-
             try:
                 # Get node instance
                 node = self.graph.get_node(current.node_id)
+
+                # Emit node start event (skip for Agent/LLM nodes - they emit their own with raw_event)
+                from mesh.nodes.agent import AgentNode
+                from mesh.nodes.llm import LLMNode
+
+                if not isinstance(node, (AgentNode, LLMNode)):
+                    yield ExecutionEvent(
+                        type=EventType.NODE_START,
+                        node_id=current.node_id,
+                        timestamp=datetime.now(),
+                    )
 
                 # Set up event queue for streaming during execution
                 event_queue: asyncio.Queue[Optional[ExecutionEvent]] = asyncio.Queue()
