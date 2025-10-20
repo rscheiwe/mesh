@@ -242,27 +242,52 @@ class SimpleTranslatorOrchestrator:
 
         # 3. Stream translated events
         async for chunk in chunk_stream:
-            event = self.translator.translate_chunk(chunk)
+            # Support both translate_chunk (OpenAI) and translate_event (Anthropic)
+            if hasattr(self.translator, 'translate_chunk'):
+                event = self.translator.translate_chunk(chunk)
+            elif hasattr(self.translator, 'translate_event'):
+                event = self.translator.translate_event(chunk)
+            else:
+                raise AttributeError(
+                    f"Translator {type(self.translator).__name__} must have "
+                    "either translate_chunk() or translate_event() method"
+                )
 
-            if not event:
-                continue
+            # Process the main event
+            if event:
+                event_dict = event.to_dict()
+                event_type = event_dict.get('type', '')
 
-            event_dict = event.to_dict()
-            event_type = event_dict.get('type', '')
+                # Consume metadata
+                if event_type == 'response-metadata':
+                    self.response_id = event_dict.get('id')
+                    self.model_id = event_dict.get('modelId')
+                    self.usage = event_dict.get('usage')
+                elif event_type == 'finish-message':
+                    self.finish_reason = event_dict.get('finishReason', 'stop')
+                else:
+                    # Forward content events
+                    yield event_dict
 
-            # Consume metadata
-            if event_type == 'response-metadata':
-                self.response_id = event_dict.get('id')
-                self.model_id = event_dict.get('modelId')
-                self.usage = event_dict.get('usage')
-                continue
+            # Drain any pending events (OpenAI translator queues first delta)
+            if hasattr(self.translator, 'get_pending_event'):
+                while True:
+                    pending = self.translator.get_pending_event()
+                    if not pending:
+                        break
+                    pending_dict = pending.to_dict()
+                    pending_type = pending_dict.get('type', '')
 
-            elif event_type == 'finish-message':
-                self.finish_reason = event_dict.get('finishReason', 'stop')
-                continue
-
-            # Forward content events
-            yield event_dict
+                    # Consume metadata from pending events too
+                    if pending_type == 'response-metadata':
+                        self.response_id = pending_dict.get('id')
+                        self.model_id = pending_dict.get('modelId')
+                        self.usage = pending_dict.get('usage')
+                    elif pending_type == 'finish-message':
+                        self.finish_reason = pending_dict.get('finishReason', 'stop')
+                    else:
+                        # Forward content events
+                        yield pending_dict
 
         # 4. Finalize pending tool calls if needed
         if hasattr(self.translator, 'finalize_tool_calls'):

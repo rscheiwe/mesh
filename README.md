@@ -35,6 +35,7 @@ Comprehensive guides and API reference:
 - **Dual API**: Programmatic (LangGraph-style) and declarative (React Flow JSON) interfaces
 - **Graph Visualization**: Generate Mermaid diagrams with color-coded node types
 - **Token-by-Token Streaming**: Real-time streaming with provider-agnostic events
+- **Advanced Event Types**: Reasoning (o1/o3), usage tracking, citations, multi-modal files, custom events
 - **Event Translation**: Use Vel's standardized events or provider-native events
 - **Multiple Agent Frameworks**: Auto-detection for Vel and OpenAI Agents SDK
 - **Multi-Provider Support**: OpenAI, Anthropic, Google via Vel translation
