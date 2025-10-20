@@ -63,8 +63,9 @@ Documentation = "https://github.com/rscheiwe/mesh#readme"
 Repository = "https://github.com/rscheiwe/mesh"
 Issues = "https://github.com/rscheiwe/mesh/issues"
 
-[tool.setuptools]
-packages = ["mesh"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mesh*"]
 
 [tool.setuptools.package-data]
 mesh = ["py.typed"]
