@@ -181,10 +181,10 @@ class AgentNode(BaseNode):
                     event_type = event.get("type", "")
 
                     if event_type == "start":
-                        # Message generation begins
+                        # Generation started - emit as NODE_START with raw_event
                         await context.emit_event(
                             ExecutionEvent(
-                                type=EventType.MESSAGE_START,
+                                type=EventType.NODE_START,
                                 node_id=self.id,
                                 metadata={"message_id": event.get("messageId")},
                                 raw_event=event,
@@ -702,11 +702,10 @@ class AgentNode(BaseNode):
 
             # Handle orchestration events (step boundaries)
             if event_type == "start":
-                # Execution start (orchestrator emits this)
-                # Emit to preserve raw_event
+                # Generation started - emit as NODE_START with raw_event
                 await context.emit_event(
                     ExecutionEvent(
-                        type=EventType.MESSAGE_START,
+                        type=EventType.NODE_START,
                         node_id=self.id,
                         metadata={"message_id": event_dict.get("messageId")},
                         raw_event=event_dict,
