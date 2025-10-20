@@ -4,10 +4,43 @@ This folder contains examples of integrating Mesh with web frameworks, parsers, 
 
 ## Examples
 
+### `fastapi_with_registry.py` ⭐ RECOMMENDED
+**Difficulty:** ⭐⭐⭐ Advanced
+
+**The recommended pattern** for integrating Mesh with a React Flow frontend.
+
+Features:
+- NodeRegistry for managing agent instances
+- Agents registered at startup
+- Frontend references agents by string ID
+- React Flow JSON with agent references
+- SSE streaming for real-time responses
+- Endpoints for listing available agents/tools
+
+**What you'll learn:**
+- Agent registry pattern
+- Declarative graph execution
+- Frontend-backend integration
+- Runtime agent resolution
+
+**Prerequisites:**
+```bash
+pip install 'mesh[server,vel,agents]'
+```
+
+**Run:**
+```bash
+python 05_integrations/fastapi_with_registry.py
+```
+
+**See also:** `AGENT_REGISTRY_PATTERN.md` for architecture details
+
+---
+
 ### `fastapi_server.py`
 **Difficulty:** ⭐⭐⭐ Advanced
 
-A production-ready FastAPI server that:
+A simpler FastAPI server example (without registry) that:
 - Exposes Mesh graphs via REST API
 - Streams responses using Server-Sent Events (SSE)
 - Handles state persistence with SQLite
@@ -71,6 +104,18 @@ python 05_integrations/react_flow_parse.py
 
 ## Integration Guides
 
+### `AGENT_REGISTRY_PATTERN.md` ⭐ START HERE
+
+**Comprehensive architecture guide** for React Flow + Mesh integration:
+- Why the registry pattern is needed
+- Frontend-backend separation
+- Runtime agent resolution
+- Complete code examples
+- API endpoint documentation
+- Troubleshooting guide
+
+**This is the recommended approach for production applications.**
+
 ### `VEL_INTEGRATION.md`
 
 Comprehensive guide for integrating Vel agents with Mesh:
@@ -87,6 +132,15 @@ Guide for integrating OpenAI Agents SDK:
 - Tool configuration
 - Event translation
 - Best practices
+
+### `frontend_example.tsx`
+
+Complete React + TypeScript example showing:
+- Fetching available agents from backend
+- Building React Flow graphs with agent references
+- Executing graphs with SSE streaming
+- Real-time event handling
+- TypeScript types for Mesh API
 
 ## Key Concepts
 
