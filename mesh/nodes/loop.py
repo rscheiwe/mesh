@@ -1,8 +1,8 @@
-"""Loop node for iteration over arrays.
+"""Loop nodes for iteration and backward jumps.
 
-This node enables iteration over arrays, executing downstream nodes
-for each item. It sets iteration context variables that can be accessed
-via {{$iteration}} in templates.
+This module provides:
+1. ForEachNode - Iteration over arrays (for-each loops)
+2. LoopNode - Backward jumps to previously executed nodes (Flowise-compatible)
 """
 
 from typing import Any, Dict, List, Optional
@@ -12,7 +12,7 @@ from mesh.core.state import ExecutionContext
 from jsonpath_ng import parse as jsonpath_parse
 
 
-class LoopNode(BaseNode):
+class ForEachNode(BaseNode):
     """Iterate over an array and execute downstream nodes for each item.
 
     This node extracts an array from the input and signals the executor
@@ -23,7 +23,7 @@ class LoopNode(BaseNode):
     This node provides the array and metadata.
 
     Example:
-        >>> loop = LoopNode(
+        >>> loop = ForEachNode(
         ...     id="process_items",
         ...     array_path="$.items",  # JSONPath to array
         ...     max_iterations=100,
@@ -139,7 +139,79 @@ class LoopNode(BaseNode):
         )
 
     def __repr__(self) -> str:
-        return f"LoopNode(id='{self.id}', path='{self.array_path}')"
+        return f"ForEachNode(id='{self.id}', path='{self.array_path}')"
+
+
+class LoopNode(BaseNode):
+    """Loop node that redirects execution back to a previously executed node.
+
+    This matches Flowise's Loop node behavior - when execution reaches this node,
+    it "jumps" back to a specified target node that has already been executed,
+    causing re-execution of that target and subsequent nodes.
+
+    Tracks loop count to prevent infinite loops.
+
+    Configuration Parameters:
+        loop_back_to: The unique ID of a previously executed node to return to
+        max_loop_count: Maximum number of times the loop can be performed (default: 5)
+
+    Example:
+        >>> loop = LoopNode(
+        ...     id="retry_loop",
+        ...     loop_back_to="process_node",
+        ...     max_loop_count=5,
+        ... )
+    """
+
+    def __init__(
+        self,
+        id: str,
+        loop_back_to: str,
+        max_loop_count: int = 5,
+        config: Dict[str, Any] = None,
+    ):
+        """Initialize loop node.
+
+        Args:
+            id: Node identifier
+            loop_back_to: ID of the node to loop back to
+            max_loop_count: Maximum loop iterations (default: 5)
+            config: Additional configuration
+        """
+        super().__init__(id, config or {})
+        self.loop_back_to = loop_back_to
+        self.max_loop_count = max_loop_count
+
+    async def _execute_impl(
+        self,
+        input: Any,
+        context: ExecutionContext,
+    ) -> NodeResult:
+        """Signal executor to jump back to target node.
+
+        The executor handles the actual loop logic via NodeResult.loop_to_node
+        and tracks loop count per node to enforce max_loop_count.
+
+        Args:
+            input: Input data (passed through to target node)
+            context: Execution context
+
+        Returns:
+            NodeResult with loop_to_node set to trigger backward jump
+        """
+        return NodeResult(
+            output=input,  # Pass input through to target node
+            loop_to_node=self.loop_back_to,
+            max_loops=self.max_loop_count,
+            metadata={
+                "loop_back_to": self.loop_back_to,
+                "max_loop_count": self.max_loop_count,
+                "node_type": "loop",
+            },
+        )
+
+    def __repr__(self) -> str:
+        return f"LoopNode(id='{self.id}', loop_back_to='{self.loop_back_to}', max={self.max_loop_count})"
 
 
 class IterationHelper:

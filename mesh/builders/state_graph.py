@@ -16,7 +16,7 @@ from mesh.nodes.agent import AgentNode
 from mesh.nodes.llm import LLMNode
 from mesh.nodes.tool import ToolNode
 from mesh.nodes.condition import ConditionNode, Condition
-from mesh.nodes.loop import LoopNode
+from mesh.nodes.loop import LoopNode, ForEachNode
 from mesh.utils.errors import GraphValidationError
 from mesh.utils.mermaid import generate_mermaid_code, save_mermaid_image, get_default_visualization_dir
 
@@ -115,14 +115,48 @@ class StateGraph:
                 config=kwargs.get("config", {}),
             )
         elif node_type == "condition":
-            node = ConditionNode(
+            # Unified condition node - supports deterministic or AI routing
+            condition_routing = kwargs.get("condition_routing", "deterministic")
+
+            if condition_routing == "deterministic":
+                # Deterministic mode: requires conditions
+                node = ConditionNode(
+                    id=node_id,
+                    condition_routing="deterministic",
+                    conditions=node_or_config,
+                    default_target=kwargs.get("default_target"),
+                    config=kwargs.get("config", {}),
+                )
+            elif condition_routing == "ai":
+                # AI mode: requires model, instructions, scenarios
+                node = ConditionNode(
+                    id=node_id,
+                    condition_routing="ai",
+                    model=kwargs.get("model"),
+                    instructions=kwargs.get("instructions"),
+                    scenarios=kwargs.get("scenarios"),
+                    default_target=kwargs.get("default_target"),
+                    config=kwargs.get("config", {}),
+                )
+            else:
+                raise GraphValidationError(
+                    f"condition_routing must be 'deterministic' or 'ai', got: {condition_routing}"
+                )
+        elif node_type == "loop":
+            # Flowise-style loop: backward jump to a previously executed node
+            if "loop_back_to" not in kwargs:
+                raise GraphValidationError(
+                    f"Loop node '{node_id}' requires 'loop_back_to' parameter"
+                )
+            node = LoopNode(
                 id=node_id,
-                conditions=node_or_config,
-                default_target=kwargs.get("default_target"),
+                loop_back_to=kwargs["loop_back_to"],
+                max_loop_count=kwargs.get("max_loop_count", 5),
                 config=kwargs.get("config", {}),
             )
-        elif node_type == "loop":
-            node = LoopNode(
+        elif node_type == "foreach":
+            # Array iteration node (previously called "loop")
+            node = ForEachNode(
                 id=node_id,
                 array_path=kwargs.get("array_path", "$.items"),
                 max_iterations=kwargs.get("max_iterations", 100),
@@ -220,10 +254,11 @@ class StateGraph:
                 )
             )
 
-        # Create synthetic condition node
+        # Create synthetic condition node (always deterministic mode)
         condition_node_id = f"{source}_condition"
         condition_node = ConditionNode(
             id=condition_node_id,
+            condition_routing="deterministic",
             conditions=conditions,
             default_target=default,
         )

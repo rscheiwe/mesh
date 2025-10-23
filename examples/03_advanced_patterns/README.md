@@ -4,6 +4,53 @@ This folder contains examples of advanced graph patterns including loops, cycles
 
 ## Examples
 
+### `condition_node_routing.py`
+**Difficulty:** ⭐⭐ Intermediate
+
+Demonstrates **deterministic** conditional branching using ConditionNode - pure logic-based routing without AI.
+
+**Examples include:**
+1. Simple true/false routing (age check: adult vs minor)
+2. Multiple conditions with all SimpleCondition helpers
+3. Custom predicate functions for complex logic
+
+**What you'll learn:**
+- True/false branching based on conditions
+- All SimpleCondition operations: equals, not_equal, contains, greater_than, less_than, is_empty
+- Creating custom predicates for complex logic
+- Default routing when no conditions match
+- Deterministic mode (condition_routing="deterministic")
+
+**Run:**
+```bash
+python 03_advanced_patterns/condition_node_routing.py
+```
+
+### `condition_node_ai_routing.py`
+**Difficulty:** ⭐⭐⭐ Advanced
+
+Demonstrates **AI-driven** conditional branching using ConditionNode - LLM-based intent classification and routing. This matches Flowise's Condition Agent Node behavior.
+
+**Examples include:**
+1. Intent classification for customer service routing
+2. Hybrid approach: deterministic checks + AI fallback
+
+**What you'll learn:**
+- AI mode for ConditionNode (condition_routing="ai")
+- Using LLM for intent classification and routing
+- Defining scenarios with natural language descriptions
+- Hybrid routing: fast deterministic rules + AI for complex cases
+- Fallback handling when LLM fails
+
+**Requirements:**
+- OPENAI_API_KEY environment variable
+
+**Run:**
+```bash
+export OPENAI_API_KEY='your-key-here'
+python 03_advanced_patterns/condition_node_ai_routing.py
+```
+
 ### `cyclic_graph_example.py`
 **Difficulty:** ⭐⭐⭐ Advanced
 

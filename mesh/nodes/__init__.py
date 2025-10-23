@@ -6,8 +6,8 @@ from mesh.nodes.end import EndNode
 from mesh.nodes.agent import AgentNode
 from mesh.nodes.llm import LLMNode
 from mesh.nodes.tool import ToolNode
-from mesh.nodes.condition import ConditionNode, Condition
-from mesh.nodes.loop import LoopNode
+from mesh.nodes.condition import ConditionNode, Condition, SimpleCondition
+from mesh.nodes.loop import LoopNode, ForEachNode
 
 __all__ = [
     "Node",
@@ -20,5 +20,7 @@ __all__ = [
     "ToolNode",
     "ConditionNode",
     "Condition",
+    "SimpleCondition",
     "LoopNode",
+    "ForEachNode",
 ]
