@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
+from mesh.core.events import ExecutionEvent, EventType, transform_event_for_transient_mode
 
 
 @dataclass
@@ -116,6 +117,7 @@ class ConditionNode(BaseNode):
         instructions: Optional[str] = None,
         scenarios: Optional[List[Dict[str, str]]] = None,
         default_target: Optional[str] = None,
+        event_mode: str = "full",
         config: Dict[str, Any] = None,
     ):
         """Initialize condition node.
@@ -128,6 +130,11 @@ class ConditionNode(BaseNode):
             instructions: Task description (ai mode)
             scenarios: List of scenario dicts (ai mode)
             default_target: Default node to route to if no match
+            event_mode: Event emission mode (default: "full")
+                - "full": All events - streams to chat
+                - "status_only": Only progress indicators
+                - "transient_events": All events prefixed with data-condition-node-*
+                - "silent": No events
             config: Additional configuration
         """
         super().__init__(id, config or {})
@@ -139,6 +146,7 @@ class ConditionNode(BaseNode):
             )
 
         self.condition_routing = condition_routing
+        self.event_mode = event_mode
         self.default_target = default_target
 
         # Deterministic mode parameters
@@ -163,6 +171,32 @@ class ConditionNode(BaseNode):
                     raise ValueError(
                         f"Each scenario must have 'name' and 'target' keys, got: {scenario}"
                     )
+
+    async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
+        """Emit event based on event_mode.
+
+        Args:
+            context: Execution context
+            event: Event to emit
+        """
+        # Silent mode - no events
+        if self.event_mode == "silent":
+            return
+
+        # Status only - skip regular events, only custom events emitted separately
+        if self.event_mode == "status_only":
+            # Only emit if it's a custom data event
+            if event.type == EventType.CUSTOM_DATA:
+                await context.emit_event(event)
+            return
+
+        # Transient events - transform all events with data-condition-node-* prefix
+        if self.event_mode == "transient_events":
+            transformed_event = transform_event_for_transient_mode(event, "condition")
+            await context.emit_event(transformed_event)
+        else:
+            # Full mode - emit events normally
+            await context.emit_event(event)
 
     async def _execute_impl(
         self,
@@ -197,6 +231,20 @@ class ConditionNode(BaseNode):
         Returns:
             NodeResult with routing information in metadata
         """
+        # Emit start event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_START,
+                node_id=self.id,
+                metadata={
+                    "routing_mode": "deterministic",
+                    "condition_count": len(self.conditions),
+                    "node_type": "condition",
+                },
+            )
+        )
+
         fulfilled_conditions = []
         unfulfilled_conditions = []
 
@@ -248,6 +296,22 @@ class ConditionNode(BaseNode):
                 }
             )
 
+        # Emit complete event
+        branch_selected = fulfilled_conditions[0].target_node if fulfilled_conditions else self.default_target
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_COMPLETE,
+                node_id=self.id,
+                metadata={
+                    "routing_mode": "deterministic",
+                    "branch_selected": branch_selected,
+                    "fulfilled_count": len(fulfilled_conditions),
+                    "node_type": "condition",
+                },
+            )
+        )
+
         return NodeResult(
             output={
                 "input": input,  # Pass through input
@@ -275,6 +339,21 @@ class ConditionNode(BaseNode):
         Returns:
             NodeResult with routing information based on LLM classification
         """
+        # Emit start event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_START,
+                node_id=self.id,
+                metadata={
+                    "routing_mode": "ai",
+                    "model": self.model,
+                    "scenario_count": len(self.scenarios),
+                    "node_type": "condition",
+                },
+            )
+        )
+
         import json
         from openai import AsyncOpenAI
 
@@ -355,6 +434,21 @@ Return ONLY the scenario name that best matches the input. Do not include any ex
                 raise ValueError(
                     f"LLM returned '{classification}' which doesn't match any scenario"
                 )
+
+            # Emit complete event
+            await self._emit_event_if_enabled(
+                context,
+                ExecutionEvent(
+                    type=EventType.NODE_COMPLETE,
+                    node_id=self.id,
+                    metadata={
+                        "routing_mode": "ai",
+                        "classification": classification,
+                        "branch_selected": target,
+                        "node_type": "condition",
+                    },
+                )
+            )
 
             return NodeResult(
                 output={

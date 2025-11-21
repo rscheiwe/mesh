@@ -51,6 +51,37 @@ class NodeConfig(BaseModel):
 
 
 @dataclass
+class GraphMetadata:
+    """Metadata about graph structure for FE rendering hints.
+
+    Provides information about node types and execution flow to help
+    frontend decide how to render different parts of the graph.
+
+    Attributes:
+        node_count: Total number of nodes in graph
+        agent_nodes: List of AgentNode IDs
+        llm_nodes: List of LLMNode IDs
+        tool_nodes: List of ToolNode IDs
+        condition_nodes: List of ConditionNode IDs
+        loop_nodes: List of LoopNode IDs
+        final_nodes: Node IDs that directly precede END node
+        intermediate_nodes: Agent/LLM nodes that are not final
+        graph_type: Classification (single_agent, multi_agent, tool_chain, hybrid)
+        has_cycles: Whether graph contains loop edges
+    """
+    node_count: int
+    agent_nodes: List[str]
+    llm_nodes: List[str]
+    tool_nodes: List[str]
+    condition_nodes: List[str]
+    loop_nodes: List[str]
+    final_nodes: List[str]
+    intermediate_nodes: List[str]
+    graph_type: str  # single_agent, multi_agent, tool_chain, hybrid
+    has_cycles: bool
+
+
+@dataclass
 class ExecutionGraph:
     """Compiled graph ready for execution.
 
@@ -64,6 +95,7 @@ class ExecutionGraph:
         children: Mapping of node IDs to their child node IDs
         starting_nodes: List of node IDs with no dependencies (entry points)
         ending_nodes: List of node IDs with no children (exit points)
+        metadata: Computed metadata about graph structure for FE hints
     """
 
     nodes: Dict[str, "Node"]
@@ -72,6 +104,7 @@ class ExecutionGraph:
     children: Dict[str, List[str]]
     starting_nodes: List[str]
     ending_nodes: List[str]
+    metadata: Optional[GraphMetadata] = None
 
     @classmethod
     def from_nodes_and_edges(
@@ -116,6 +149,9 @@ class ExecutionGraph:
         starting_nodes = [node_id for node_id, deps in dependencies.items() if not deps]
         ending_nodes = [node_id for node_id, childs in children.items() if not childs]
 
+        # Compute metadata
+        metadata = cls._compute_metadata(nodes, edges, children, ending_nodes)
+
         return cls(
             nodes=nodes,
             edges=edges,
@@ -123,6 +159,88 @@ class ExecutionGraph:
             children=children,
             starting_nodes=starting_nodes,
             ending_nodes=ending_nodes,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _compute_metadata(
+        nodes: Dict[str, "Node"],
+        edges: List[Edge],
+        children: Dict[str, List[str]],
+        ending_nodes: List[str]
+    ) -> GraphMetadata:
+        """Compute graph metadata for FE rendering hints.
+
+        Args:
+            nodes: Dictionary of nodes
+            edges: List of edges
+            children: Parent-child relationships
+            ending_nodes: Nodes with no outgoing edges
+
+        Returns:
+            GraphMetadata with computed fields
+        """
+        # Categorize nodes by type
+        agent_nodes = []
+        llm_nodes = []
+        tool_nodes = []
+        condition_nodes = []
+        loop_nodes = []
+
+        for node_id, node in nodes.items():
+            node_type = node.__class__.__name__
+            if node_type == "AgentNode":
+                agent_nodes.append(node_id)
+            elif node_type == "LLMNode":
+                llm_nodes.append(node_id)
+            elif node_type == "ToolNode":
+                tool_nodes.append(node_id)
+            elif node_type == "ConditionNode":
+                condition_nodes.append(node_id)
+            elif node_type == "LoopNode":
+                loop_nodes.append(node_id)
+
+        # Find final nodes (nodes that directly feed into END or ending nodes)
+        final_nodes = []
+        for node_id in nodes.keys():
+            # Check if this node's children include END or any ending node
+            node_children = children.get(node_id, [])
+            if "END" in node_children or any(child in ending_nodes for child in node_children):
+                # Only include agent/llm nodes as "final"
+                if node_id in agent_nodes or node_id in llm_nodes:
+                    final_nodes.append(node_id)
+
+        # Intermediate nodes = agent/llm nodes that are not final
+        intermediate_nodes = [
+            node_id for node_id in (agent_nodes + llm_nodes)
+            if node_id not in final_nodes
+        ]
+
+        # Determine graph type
+        total_agents_llms = len(agent_nodes) + len(llm_nodes)
+        if total_agents_llms == 0:
+            graph_type = "tool_chain"
+        elif total_agents_llms == 1:
+            graph_type = "single_agent"
+        elif len(agent_nodes) >= 2 or len(llm_nodes) >= 2 or (len(agent_nodes) >= 1 and len(llm_nodes) >= 1):
+            graph_type = "multi_agent"
+        else:
+            graph_type = "hybrid"
+
+        # Check for cycles
+        has_cycles = any(edge.is_loop_edge for edge in edges)
+
+        return GraphMetadata(
+            node_count=len(nodes),
+            agent_nodes=agent_nodes,
+            llm_nodes=llm_nodes,
+            tool_nodes=tool_nodes,
+            condition_nodes=condition_nodes,
+            loop_nodes=loop_nodes,
+            final_nodes=final_nodes,
+            intermediate_nodes=intermediate_nodes,
+            graph_type=graph_type,
+            has_cycles=has_cycles,
         )
 
     def validate(self) -> None:

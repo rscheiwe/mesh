@@ -3,9 +3,12 @@
 This module provides state tracking and persistence coordination during execution.
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 import uuid
+
+if TYPE_CHECKING:
+    from mesh.core.graph import GraphMetadata
 
 
 @dataclass
@@ -25,6 +28,7 @@ class ExecutionContext:
         trace_id: Unique identifier for this execution trace
         executed_data: List of node execution results
         loop_iterations: Tracking for cyclic edges (edge_key -> iteration_count)
+        graph_metadata: Metadata about graph structure (for FE rendering hints)
     """
 
     graph_id: str
@@ -36,6 +40,7 @@ class ExecutionContext:
     trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     executed_data: List[Dict[str, Any]] = field(default_factory=list)
     loop_iterations: Dict[str, int] = field(default_factory=dict)  # Track loop edge iterations
+    graph_metadata: Optional["GraphMetadata"] = None  # Graph structure metadata
 
     # Event emitter reference (set by executor)
     _event_emitter: Optional[Any] = field(default=None, repr=False)

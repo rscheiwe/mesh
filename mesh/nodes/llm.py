@@ -9,7 +9,7 @@ import os
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
-from mesh.core.events import ExecutionEvent, EventType
+from mesh.core.events import ExecutionEvent, EventType, transform_event_for_transient_mode
 from mesh.utils.variables import VariableResolver
 
 
@@ -39,6 +39,7 @@ class LLMNode(BaseNode):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         provider: str = "openai",
+        event_mode: str = "full",
         config: Dict[str, Any] = None,
     ):
         """Initialize LLM node.
@@ -50,6 +51,11 @@ class LLMNode(BaseNode):
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
             provider: LLM provider ("openai", "anthropic", etc.)
+            event_mode: Event emission mode (default: "full")
+                - "full": All events - streams to chat
+                - "status_only": Only progress indicators (mesh-node-start/complete)
+                - "transient_events": All events prefixed with data-llm-node-*
+                - "silent": No events
             config: Additional configuration
         """
         super().__init__(id, config or {})
@@ -58,6 +64,7 @@ class LLMNode(BaseNode):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.provider = provider
+        self.event_mode = event_mode
 
         # Initialize provider client
         self._client = None
@@ -103,6 +110,29 @@ class LLMNode(BaseNode):
                 )
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
+
+    async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
+        """Emit event based on event_mode.
+
+        Args:
+            context: Execution context
+            event: Event to emit
+        """
+        # Silent mode - no events
+        if self.event_mode == "silent":
+            return
+
+        # Status only - skip regular events, only custom events emitted separately
+        if self.event_mode == "status_only":
+            return
+
+        # Transient events - transform all events with data-llm-node-* prefix
+        if self.event_mode == "transient_events":
+            transformed_event = transform_event_for_transient_mode(event, "llm")
+            await context.emit_event(transformed_event)
+        else:
+            # Full mode - emit events normally
+            await context.emit_event(event)
 
     async def _execute_impl(
         self,
@@ -198,7 +228,7 @@ class LLMNode(BaseNode):
             # Handle orchestration events
             if event_type == "start":
                 # Generation started - emit as NODE_START with raw_event
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
@@ -208,42 +238,50 @@ class LLMNode(BaseNode):
                 )
 
             elif event_type == "start-step":
-                # Step started (single-step for LLM)
-                await context.emit_event(
+                # Step started (single-step for LLM, AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_START,
+                        type=EventType.START_STEP,
                         node_id=self.id,
-                        metadata={"step_index": 0},
+                        metadata={
+                            "step_index": 0,
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish-step":
-                # Step finished with usage
+                # Step finished with usage (AI SDK format)
                 usage_data = event_dict.get("usage")
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_COMPLETE,
+                        type=EventType.FINISH_STEP,
                         node_id=self.id,
                         metadata={
                             "step_index": 0,
                             "finish_reason": event_dict.get("finishReason"),
                             "usage": usage_data,
                             "response": event_dict.get("response"),
+                            "node_type": "llm",
+                            "model": self.model,
                         },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish":
-                # Overall generation complete
-                await context.emit_event(
+                # Overall generation complete (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.RESPONSE_METADATA,
+                        type=EventType.FINISH,
                         node_id=self.id,
                         metadata={
                             "finish_reason": event_dict.get("finishReason"),
                             "total_usage": event_dict.get("totalUsage"),
+                            "node_type": "llm",
+                            "model": self.model,
                         },
                         raw_event=event_dict,
                     )
@@ -251,69 +289,92 @@ class LLMNode(BaseNode):
 
             # Handle content events
             elif event_type == "text-start":
-                # Text block started
-                await context.emit_event(
+                # Text block started (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_START,
+                        type=EventType.TEXT_START,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "text-delta":
-                # Token received
+                # Token received (AI SDK format)
                 delta = event_dict.get("delta", "")
                 full_response += delta
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.TOKEN,
+                        type=EventType.TEXT_DELTA,
                         node_id=self.id,
-                        content=delta,
-                        metadata={"provider": "openai"},
+                        delta=delta,  # AI SDK field
+                        metadata={
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "text-end":
-                # Text block ended
-                await context.emit_event(
+                # Text block ended (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_COMPLETE,
+                        type=EventType.TEXT_END,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
-            # Handle reasoning events (o1/o3 models)
+            # Handle reasoning events (o1/o3 models, AI SDK format)
             elif event_type == "reasoning-start":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.REASONING_START,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "reasoning-delta":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.REASONING_TOKEN,
+                        type=EventType.REASONING_DELTA,
                         node_id=self.id,
-                        content=event_dict.get("delta", ""),
-                        metadata={"block_id": event_dict.get("blockId")},
+                        delta=event_dict.get("delta", ""),  # AI SDK field
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "reasoning-end":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.REASONING_END,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
@@ -424,7 +485,7 @@ class LLMNode(BaseNode):
             # Handle orchestration events
             if event_type == "start":
                 # Generation started - emit as NODE_START with raw_event
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
@@ -434,39 +495,50 @@ class LLMNode(BaseNode):
                 )
 
             elif event_type == "start-step":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_START,
+                        type=EventType.START_STEP,
                         node_id=self.id,
-                        metadata={"step_index": 0},
+                        metadata={
+                            "step_index": 0,
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish-step":
                 usage_data = event_dict.get("usage")
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_COMPLETE,
+                        type=EventType.FINISH_STEP,
                         node_id=self.id,
                         metadata={
                             "step_index": 0,
                             "finish_reason": event_dict.get("finishReason"),
                             "usage": usage_data,
                             "response": event_dict.get("response"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
                         },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.RESPONSE_METADATA,
+                        type=EventType.FINISH,
                         node_id=self.id,
                         metadata={
                             "finish_reason": event_dict.get("finishReason"),
                             "total_usage": event_dict.get("totalUsage"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
                         },
                         raw_event=event_dict,
                     )
@@ -474,11 +546,16 @@ class LLMNode(BaseNode):
 
             # Handle content events
             elif event_type == "text-start":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_START,
+                        type=EventType.TEXT_START,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
@@ -486,54 +563,78 @@ class LLMNode(BaseNode):
             elif event_type == "text-delta":
                 delta = event_dict.get("delta", "")
                 full_response += delta
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.TOKEN,
+                        type=EventType.TEXT_DELTA,
                         node_id=self.id,
-                        content=delta,
-                        metadata={"provider": "anthropic"},
+                        delta=delta,  # AI SDK field
+                        metadata={
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "text-end":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_COMPLETE,
+                        type=EventType.TEXT_END,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
-            # Handle reasoning events (Extended Thinking)
+            # Handle reasoning events (Extended Thinking, AI SDK format)
             elif event_type == "reasoning-start":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.REASONING_START,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "reasoning-delta":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.REASONING_TOKEN,
+                        type=EventType.REASONING_DELTA,
                         node_id=self.id,
-                        content=event_dict.get("delta", ""),
-                        metadata={"block_id": event_dict.get("blockId")},
+                        delta=event_dict.get("delta", ""),  # AI SDK field
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "reasoning-end":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.REASONING_END,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "anthropic",
+                        },
                         raw_event=event_dict,
                     )
                 )
@@ -628,7 +729,7 @@ class LLMNode(BaseNode):
             # Handle orchestration events
             if event_type == "start":
                 # Generation started - emit as NODE_START with raw_event
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
@@ -638,39 +739,50 @@ class LLMNode(BaseNode):
                 )
 
             elif event_type == "start-step":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_START,
+                        type=EventType.START_STEP,
                         node_id=self.id,
-                        metadata={"step_index": 0},
+                        metadata={
+                            "step_index": 0,
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish-step":
                 usage_data = event_dict.get("usage")
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_COMPLETE,
+                        type=EventType.FINISH_STEP,
                         node_id=self.id,
                         metadata={
                             "step_index": 0,
                             "finish_reason": event_dict.get("finishReason"),
                             "usage": usage_data,
                             "response": event_dict.get("response"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
                         },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.RESPONSE_METADATA,
+                        type=EventType.FINISH,
                         node_id=self.id,
                         metadata={
                             "finish_reason": event_dict.get("finishReason"),
                             "total_usage": event_dict.get("totalUsage"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
                         },
                         raw_event=event_dict,
                     )
@@ -678,11 +790,16 @@ class LLMNode(BaseNode):
 
             # Handle content events
             elif event_type == "text-start":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_START,
+                        type=EventType.TEXT_START,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
+                        },
                         raw_event=event_dict,
                     )
                 )
@@ -690,35 +807,47 @@ class LLMNode(BaseNode):
             elif event_type == "text-delta":
                 delta = event_dict.get("delta", "")
                 full_response += delta
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.TOKEN,
+                        type=EventType.TEXT_DELTA,
                         node_id=self.id,
-                        content=delta,
-                        metadata={"provider": "gemini"},
+                        delta=delta,
+                        metadata={
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "text-end":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_COMPLETE,
+                        type=EventType.TEXT_END,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("blockId")},
+                        metadata={
+                            "block_id": event_dict.get("blockId"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             # Handle grounding sources (Gemini-specific)
             elif event_type == "source":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.SOURCE,
                         node_id=self.id,
                         metadata={
                             "url": event_dict.get("url"),
                             "title": event_dict.get("title"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
                         },
                         raw_event=event_dict,
                     )
@@ -726,7 +855,7 @@ class LLMNode(BaseNode):
 
             # Handle file attachments (multi-modal)
             elif event_type == "file":
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.FILE,
                         node_id=self.id,
@@ -734,6 +863,9 @@ class LLMNode(BaseNode):
                             "name": event_dict.get("name"),
                             "mime_type": event_dict.get("mimeType"),
                             "data": event_dict.get("data"),
+                            "node_type": "llm",
+                            "model": self.model,
+                            "provider": "gemini",
                         },
                         raw_event=event_dict,
                     )

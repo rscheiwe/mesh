@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
+from mesh.core.events import ExecutionEvent, EventType, transform_event_for_transient_mode
 from jsonpath_ng import parse as jsonpath_parse
 
 
@@ -35,19 +36,52 @@ class ForEachNode(BaseNode):
         id: str,
         array_path: str = "$.items",
         max_iterations: int = 100,
+        event_mode: str = "full",
         config: Dict[str, Any] = None,
     ):
-        """Initialize loop node.
+        """Initialize foreach node.
 
         Args:
             id: Node identifier
             array_path: JSONPath expression to extract array from input
             max_iterations: Maximum iterations (safety limit)
+            event_mode: Event emission mode (default: "full")
+                - "full": All events - streams to chat
+                - "status_only": Only progress indicators
+                - "transient_events": All events prefixed with data-foreach-node-*
+                - "silent": No events
             config: Additional configuration
         """
         super().__init__(id, config or {})
         self.array_path = array_path
         self.max_iterations = max_iterations
+        self.event_mode = event_mode
+
+    async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
+        """Emit event based on event_mode.
+
+        Args:
+            context: Execution context
+            event: Event to emit
+        """
+        # Silent mode - no events
+        if self.event_mode == "silent":
+            return
+
+        # Status only - skip regular events, only custom events emitted separately
+        if self.event_mode == "status_only":
+            # Only emit if it's a custom data event
+            if event.type == EventType.CUSTOM_DATA:
+                await context.emit_event(event)
+            return
+
+        # Transient events - transform all events with data-foreach-node-* prefix
+        if self.event_mode == "transient_events":
+            transformed_event = transform_event_for_transient_mode(event, "foreach")
+            await context.emit_event(transformed_event)
+        else:
+            # Full mode - emit events normally
+            await context.emit_event(event)
 
     async def _execute_impl(
         self,
@@ -63,6 +97,19 @@ class ForEachNode(BaseNode):
         Returns:
             NodeResult with array data and loop metadata
         """
+        # Emit start event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_START,
+                node_id=self.id,
+                metadata={
+                    "array_path": self.array_path,
+                    "node_type": "foreach",
+                },
+            )
+        )
+
         # Extract array from input
         array_data = self._extract_array(input)
 
@@ -81,6 +128,20 @@ class ForEachNode(BaseNode):
                 f"Warning: Loop node '{self.id}' limited to "
                 f"{self.max_iterations} iterations (original: {original_length})"
             )
+
+        # Emit complete event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_COMPLETE,
+                node_id=self.id,
+                metadata={
+                    "array_length": len(array_data),
+                    "iterations": len(array_data),
+                    "node_type": "foreach",
+                },
+            )
+        )
 
         return NodeResult(
             output={
@@ -168,6 +229,7 @@ class LoopNode(BaseNode):
         id: str,
         loop_back_to: str,
         max_loop_count: int = 5,
+        event_mode: str = "full",
         config: Dict[str, Any] = None,
     ):
         """Initialize loop node.
@@ -176,11 +238,43 @@ class LoopNode(BaseNode):
             id: Node identifier
             loop_back_to: ID of the node to loop back to
             max_loop_count: Maximum loop iterations (default: 5)
+            event_mode: Event emission mode (default: "full")
+                - "full": All events - streams to chat
+                - "status_only": Only progress indicators
+                - "transient_events": All events prefixed with data-loop-node-*
+                - "silent": No events
             config: Additional configuration
         """
         super().__init__(id, config or {})
         self.loop_back_to = loop_back_to
         self.max_loop_count = max_loop_count
+        self.event_mode = event_mode
+
+    async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
+        """Emit event based on event_mode.
+
+        Args:
+            context: Execution context
+            event: Event to emit
+        """
+        # Silent mode - no events
+        if self.event_mode == "silent":
+            return
+
+        # Status only - skip regular events, only custom events emitted separately
+        if self.event_mode == "status_only":
+            # Only emit if it's a custom data event
+            if event.type == EventType.CUSTOM_DATA:
+                await context.emit_event(event)
+            return
+
+        # Transient events - transform all events with data-loop-node-* prefix
+        if self.event_mode == "transient_events":
+            transformed_event = transform_event_for_transient_mode(event, "loop")
+            await context.emit_event(transformed_event)
+        else:
+            # Full mode - emit events normally
+            await context.emit_event(event)
 
     async def _execute_impl(
         self,
@@ -199,6 +293,20 @@ class LoopNode(BaseNode):
         Returns:
             NodeResult with loop_to_node set to trigger backward jump
         """
+        # Emit loop event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_START,
+                node_id=self.id,
+                metadata={
+                    "loop_back_to": self.loop_back_to,
+                    "max_loop_count": self.max_loop_count,
+                    "node_type": "loop",
+                },
+            )
+        )
+
         return NodeResult(
             output=input,  # Pass input through to target node
             loop_to_node=self.loop_back_to,

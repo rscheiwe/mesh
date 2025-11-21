@@ -19,7 +19,8 @@ class VariableResolver:
     """Resolve {{variable}} references in template strings.
 
     Supported variable types:
-    - {{$question}} - User input to the graph
+    - {{$input}} or {{$question}} - User input to the graph
+    - {{$input.field}} or {{$question.field}} - Nested field in user input
     - {{node_id}} - Reference another node's output
     - {{node_id.output.path}} - JSONPath into node output
     - {{$vars.key}} - Global variables from context
@@ -81,13 +82,26 @@ class VariableResolver:
         Raises:
             VariableResolutionError: If resolution fails
         """
-        # {{$question}} - User input
-        if variable == "$question":
-            # Find the input from the first node
+        # {{$question}} or {{$input}} or {{$input.field}} - User input
+        if variable in ("$question", "$input") or variable.startswith("$input.") or variable.startswith("$question."):
+            # Find the input from the first node (START node output)
             if self.context.executed_data:
                 first_input = self.context.executed_data[0].get("output")
                 if isinstance(first_input, dict) and "input" in first_input:
-                    return first_input["input"]
+                    base_input = first_input["input"]
+                else:
+                    base_input = first_input
+
+                # Handle nested path like {{$input.topic1}}
+                if variable.startswith("$input."):
+                    key = variable[7:]  # Remove "$input."
+                    return self._get_nested(base_input, key)
+                elif variable.startswith("$question."):
+                    key = variable[10:]  # Remove "$question."
+                    return self._get_nested(base_input, key)
+
+                # Return entire input
+                return base_input if base_input is not None else ""
             return ""
 
         # {{$vars.key}} - Global variables

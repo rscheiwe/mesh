@@ -11,6 +11,7 @@ import asyncio
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
+from mesh.core.events import ExecutionEvent, EventType, transform_event_for_transient_mode
 
 
 class ToolNode(BaseNode):
@@ -42,6 +43,7 @@ class ToolNode(BaseNode):
         self,
         id: str,
         tool_fn: Callable,
+        event_mode: str = "full",
         config: Dict[str, Any] = None,
     ):
         """Initialize tool node.
@@ -49,16 +51,48 @@ class ToolNode(BaseNode):
         Args:
             id: Node identifier
             tool_fn: Function to execute (sync or async)
+            event_mode: Event emission mode (default: "full")
+                - "full": All events - streams to chat
+                - "status_only": Only progress indicators (tool-start/complete)
+                - "transient_events": All events prefixed with data-tool-node-*
+                - "silent": No events
             config: Configuration including parameter bindings
         """
         super().__init__(id, config or {})
         self.tool_fn = tool_fn
+        self.event_mode = event_mode
         self.is_async = inspect.iscoroutinefunction(tool_fn)
         self.signature = inspect.signature(tool_fn)
 
         # Store function metadata
         self.function_name = tool_fn.__name__
         self.function_doc = inspect.getdoc(tool_fn) or ""
+
+    async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
+        """Emit event based on event_mode.
+
+        Args:
+            context: Execution context
+            event: Event to emit
+        """
+        # Silent mode - no events
+        if self.event_mode == "silent":
+            return
+
+        # Status only - skip regular events, only custom events emitted separately
+        if self.event_mode == "status_only":
+            # Only emit if it's a custom data event (tool-start/complete)
+            if event.type == EventType.CUSTOM_DATA:
+                await context.emit_event(event)
+            return
+
+        # Transient events - transform all events with data-tool-node-* prefix
+        if self.event_mode == "transient_events":
+            transformed_event = transform_event_for_transient_mode(event, "tool")
+            await context.emit_event(transformed_event)
+        else:
+            # Full mode - emit events normally
+            await context.emit_event(event)
 
     async def _execute_impl(
         self,
@@ -74,6 +108,19 @@ class ToolNode(BaseNode):
         Returns:
             NodeResult with function output
         """
+        # Emit start event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_START,
+                node_id=self.id,
+                metadata={
+                    "tool_name": self.function_name,
+                    "node_type": "tool",
+                },
+            )
+        )
+
         # Build kwargs from function signature
         kwargs = self._build_kwargs(input, context)
 
@@ -86,9 +133,37 @@ class ToolNode(BaseNode):
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, lambda: self.tool_fn(**kwargs))
         except Exception as e:
+            # Emit error event
+            await self._emit_event_if_enabled(
+                context,
+                ExecutionEvent(
+                    type=EventType.NODE_ERROR,
+                    node_id=self.id,
+                    error=str(e),
+                    metadata={
+                        "tool_name": self.function_name,
+                        "node_type": "tool",
+                    },
+                )
+            )
             raise RuntimeError(
                 f"Tool function '{self.function_name}' failed: {str(e)}"
             ) from e
+
+        # Emit complete event with output preview
+        output_preview = str(result)[:100] if result else None
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_COMPLETE,
+                node_id=self.id,
+                output=output_preview,
+                metadata={
+                    "tool_name": self.function_name,
+                    "node_type": "tool",
+                },
+            )
+        )
 
         return NodeResult(
             output=result,

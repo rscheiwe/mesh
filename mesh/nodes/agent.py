@@ -13,6 +13,16 @@ from mesh.core.state import ExecutionContext
 from mesh.core.events import ExecutionEvent, EventType
 from mesh.utils.variables import VariableResolver
 from mesh.utils.translator_orchestrator import TranslatorOrchestrator
+from mesh.utils.input_parser import (
+    should_parse_input,
+    detect_input_variables,
+    parse_natural_language_input
+)
+from mesh.core.events import (
+    create_mesh_node_start_event,
+    create_mesh_node_complete_event,
+    transform_event_for_transient_mode
+)
 
 
 class AgentNode(BaseNode):
@@ -43,6 +53,7 @@ class AgentNode(BaseNode):
         agent: Any,
         system_prompt: Optional[str] = None,
         use_native_events: bool = False,
+        event_mode: str = "full",
         config: Dict[str, Any] = None,
     ):
         """Initialize agent node.
@@ -53,12 +64,18 @@ class AgentNode(BaseNode):
             system_prompt: Optional system prompt override
             use_native_events: If True, use provider's native events. If False (default),
                              use Vel's translated events for consistent event handling
+            event_mode: Event emission mode:
+                - "full": All events (text-delta, tool-*, etc.) - streams to chat
+                - "status_only": Only data-mesh-node-start/complete - progress indicators only
+                - "transient_events": All events but prefixed with data-agent-node-* - render differently
+                - "silent": No events to FE - invisible execution
             config: Additional configuration
         """
         super().__init__(id, config or {})
         self.agent = agent
         self.system_prompt = system_prompt
         self.use_native_events = use_native_events
+        self.event_mode = event_mode
         self.agent_type = self._detect_agent_type(agent)
 
         # Initialize Vel SDK translator if available and not using native events
@@ -125,23 +142,128 @@ class AgentNode(BaseNode):
         Returns:
             NodeResult with agent response
         """
-        # Extract message from input
-        message = self._extract_message(input)
+        # Emit custom node start event if graph metadata available
+        # Always emit for status_only and transient_events, not for silent
+        if context.graph_metadata and self.event_mode != "silent":
+            is_final = self.id in context.graph_metadata.final_nodes
+            is_intermediate = self.id in context.graph_metadata.intermediate_nodes
 
-        # Resolve system prompt if provided
-        if self.system_prompt:
-            resolver = VariableResolver(context)
-            resolved_prompt = await resolver.resolve(self.system_prompt)
-            # Update agent system prompt if possible
-            self._update_system_prompt(resolved_prompt)
+            start_event = create_mesh_node_start_event(
+                node_id=self.id,
+                node_type="agent",
+                is_final=is_final,
+                is_intermediate=is_intermediate
+            )
+            await context.emit_event(start_event)
 
-        # Execute based on agent type
-        if self.agent_type == "vel":
-            return await self._execute_vel_agent(message, context)
-        elif self.agent_type == "openai":
-            return await self._execute_openai_agent(message, context)
+        try:
+            # Extract message from input
+            message = self._extract_message(input)
+
+            # Auto-parse natural language input if system_prompt has multiple {{$input.X}} variables
+            if self.system_prompt and should_parse_input(self.system_prompt, input):
+                field_names = detect_input_variables(self.system_prompt)
+
+                # Get model config for parser (use fast model for efficiency)
+                parser_model_config = {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini"  # Fast, cheap model for parsing
+                }
+
+                # Parse natural language into structured data
+                parsed_data = await parse_natural_language_input(
+                    message,
+                    field_names,
+                    parser_model_config
+                )
+
+                # Update the START node output in executed_data so VariableResolver can access it
+                if context.executed_data and len(context.executed_data) > 0:
+                    # Replace the START node output with parsed structured data
+                    context.executed_data[0]["output"] = parsed_data
+
+                # Also update input for downstream processing
+                input = parsed_data
+
+            # Resolve system prompt if provided
+            if self.system_prompt:
+                resolver = VariableResolver(context)
+                resolved_prompt = await resolver.resolve(self.system_prompt)
+                # Update agent system prompt if possible
+                self._update_system_prompt(resolved_prompt)
+
+            # Execute based on agent type
+            if self.agent_type == "vel":
+                result = await self._execute_vel_agent(message, context)
+            elif self.agent_type == "openai":
+                result = await self._execute_openai_agent(message, context)
+            else:
+                raise ValueError(f"Unknown agent type: {self.agent_type}")
+
+            # Emit custom node complete event if graph metadata available
+            # Always emit for status_only and transient_events, not for silent
+            if context.graph_metadata and self.event_mode != "silent":
+                is_final = self.id in context.graph_metadata.final_nodes
+                is_intermediate = self.id in context.graph_metadata.intermediate_nodes
+
+                # Get output preview (first 100 chars)
+                output_preview = None
+                if result.output:
+                    output_str = str(result.output)
+                    output_preview = output_str[:100] + "..." if len(output_str) > 100 else output_str
+
+                complete_event = create_mesh_node_complete_event(
+                    node_id=self.id,
+                    node_type="agent",
+                    is_final=is_final,
+                    is_intermediate=is_intermediate,
+                    output_preview=output_preview
+                )
+                await context.emit_event(complete_event)
+
+            return result
+
+        except Exception as e:
+            # Emit completion event even on error
+            # Always emit for status_only and transient_events, not for silent
+            if context.graph_metadata and self.event_mode != "silent":
+                is_final = self.id in context.graph_metadata.final_nodes
+                is_intermediate = self.id in context.graph_metadata.intermediate_nodes
+
+                complete_event = create_mesh_node_complete_event(
+                    node_id=self.id,
+                    node_type="agent",
+                    is_final=is_final,
+                    is_intermediate=is_intermediate,
+                    output_preview="ERROR"
+                )
+                await context.emit_event(complete_event)
+
+            raise
+
+    async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
+        """Emit event based on event_mode configuration.
+
+        Args:
+            context: Execution context
+            event: Event to emit
+        """
+        if self.event_mode == "silent":
+            # No events emitted
+            return
+
+        if self.event_mode == "status_only":
+            # Only emit custom data-mesh-node-* events (handled separately)
+            # Don't emit regular streaming events
+            return
+
+        if self.event_mode == "transient_events":
+            # Transform ALL events to data-agent-node-* format
+            transformed_event = transform_event_for_transient_mode(event, "agent")
+            await context.emit_event(transformed_event)
         else:
-            raise ValueError(f"Unknown agent type: {self.agent_type}")
+            # event_mode == "full" - emit normal events
+            await context.emit_event(event)
 
     async def _execute_vel_agent(
         self,
@@ -181,160 +303,195 @@ class AgentNode(BaseNode):
                     event_type = event.get("type", "")
 
                     if event_type == "start":
-                        # Generation started - emit as NODE_START with raw_event
-                        await context.emit_event(
+                        # Generation started - emit as NODE_START with metadata
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.NODE_START,
                                 node_id=self.id,
-                                metadata={"message_id": event.get("messageId")},
+                                metadata={
+                                    "message_id": event.get("messageId"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
                                 raw_event=event,
                             )
                         )
 
                     elif event_type == "text-start":
-                        # Text block starts
-                        await context.emit_event(
+                        # Text block starts (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.MESSAGE_START,
+                                type=EventType.TEXT_START,
                                 node_id=self.id,
-                                metadata={"text_block_id": event.get("id")},
-                            raw_event=event,
+                                metadata={
+                                    "text_block_id": event.get("id"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "text-delta":
-                        # Token streaming
+                        # Token streaming (AI SDK format)
                         delta = event.get("delta", "")
                         if delta:
                             full_response += delta
-                            await context.emit_event(
+                            await self._emit_event_if_enabled(context,
                                 ExecutionEvent(
-                                    type=EventType.TOKEN,
+                                    type=EventType.TEXT_DELTA,
                                     node_id=self.id,
-                                    content=delta,
-                                    metadata={"text_block_id": event.get("id")},
-                                raw_event=event,
+                                    delta=delta,  # AI SDK field
+                                    metadata={
+                                        "text_block_id": event.get("id"),
+                                        "node_type": "agent",
+                                        "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                    },
+                                    raw_event=event,
                                 )
                             )
 
                     elif event_type == "text-end":
-                        # Text block completes
-                        await context.emit_event(
+                        # Text block completes (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.MESSAGE_COMPLETE,
+                                type=EventType.TEXT_END,
                                 node_id=self.id,
-                                metadata={"text_block_id": event.get("id")},
-                            raw_event=event,
+                                metadata={
+                                    "text_block_id": event.get("id"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "tool-input-start":
-                        # Tool call begins
-                        await context.emit_event(
+                        # Tool call begins (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.TOOL_CALL_START,
+                                type=EventType.TOOL_INPUT_START,
                                 node_id=self.id,
                                 metadata={
                                     "tool_call_id": event.get("toolCallId"),
                                     "tool_name": event.get("toolName"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "tool-input-delta":
-                        # Tool argument chunk streaming
+                        # Tool argument chunk streaming (AI SDK format)
                         delta = event.get("inputTextDelta", "")
                         if delta:
-                            await context.emit_event(
+                            await self._emit_event_if_enabled(context,
                                 ExecutionEvent(
-                                    type=EventType.TOKEN,
+                                    type=EventType.TOOL_INPUT_DELTA,
                                     node_id=self.id,
-                                    content=delta,
+                                    delta=delta,  # AI SDK field
                                     metadata={
                                         "tool_call_id": event.get("toolCallId"),
-                                        "event_subtype": "tool_input",
+                                        "node_type": "agent",
+                                        "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                     },
-                                raw_event=event,
+                                    raw_event=event,
                                 )
                             )
 
                     elif event_type == "tool-input-available":
-                        # Tool arguments complete and ready
-                        await context.emit_event(
+                        # Tool arguments complete and ready (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.TOOL_CALL_START,
+                                type=EventType.TOOL_INPUT_AVAILABLE,
                                 node_id=self.id,
                                 metadata={
                                     "tool_call_id": event.get("toolCallId"),
                                     "tool_name": event.get("toolName"),
                                     "input": event.get("input"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "tool-output-available":
-                        # Tool execution result
-                        await context.emit_event(
+                        # Tool execution result (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.TOOL_CALL_COMPLETE,
+                                type=EventType.TOOL_OUTPUT_AVAILABLE,
                                 node_id=self.id,
                                 output=event.get("output"),
                                 metadata={
                                     "tool_call_id": event.get("toolCallId"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "finish-message":
-                        # Message generation complete
+                        # Message generation complete (AI SDK format)
                         finish_reason = event.get("finishReason", "unknown")
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.MESSAGE_COMPLETE,
+                                type=EventType.FINISH_MESSAGE,
                                 node_id=self.id,
-                                metadata={"finish_reason": finish_reason},
-                            raw_event=event,
+                                metadata={
+                                    "finish_reason": finish_reason,
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "error":
-                        # Error occurred
+                        # Error occurred (AI SDK format)
                         error_msg = event.get("error", "Unknown error")
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.NODE_ERROR,
+                                type=EventType.ERROR,
                                 node_id=self.id,
                                 error=error_msg,
-                            raw_event=event,
+                                metadata={
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
                         raise RuntimeError(f"Vel agent error: {error_msg}")
 
                     elif event_type == "start-step":
-                        # Step begins (multi-step execution)
+                        # Step begins (multi-step execution, AI SDK format)
                         step_index = event.get("stepIndex", 0)
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.STEP_START,
+                                type=EventType.START_STEP,
                                 node_id=self.id,
-                                metadata={"step_index": step_index},
-                            raw_event=event,
+                                metadata={
+                                    "step_index": step_index,
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "finish-step":
-                        # Step completes with usage and metadata
+                        # Step completes with usage and metadata (AI SDK format)
                         step_index = event.get("stepIndex", 0)
                         finish_reason = event.get("finishReason", "stop")
                         usage = event.get("usage")
                         response_meta = event.get("response")
 
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.STEP_COMPLETE,
+                                type=EventType.FINISH_STEP,
                                 node_id=self.id,
                                 metadata={
                                     "step_index": step_index,
@@ -342,73 +499,85 @@ class AgentNode(BaseNode):
                                     "usage": usage,
                                     "response": response_meta,
                                     "had_tool_calls": event.get("hadToolCalls", False),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "finish":
-                        # Overall generation complete
+                        # Overall generation complete (AI SDK format)
                         finish_reason = event.get("finishReason", "stop")
                         total_usage = event.get("totalUsage")
 
-                        # Emit as metadata event (executor will emit NODE_COMPLETE)
-                        await context.emit_event(
+                        # Emit as finish event (AI SDK)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
-                                type=EventType.RESPONSE_METADATA,
+                                type=EventType.FINISH,
                                 node_id=self.id,
                                 metadata={
                                     "finish_reason": finish_reason,
                                     "total_usage": total_usage,
                                     "steps_completed": event.get("stepsCompleted"),
-                                    "event_subtype": "finish",
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "reasoning-start":
-                        # Reasoning block starts (o1/o3/Claude Extended Thinking)
-                        await context.emit_event(
+                        # Reasoning block starts (o1/o3/Claude Extended Thinking, AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.REASONING_START,
                                 node_id=self.id,
-                                metadata={"block_id": event.get("id")},
-                            raw_event=event,
+                                metadata={
+                                    "block_id": event.get("id"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "reasoning-delta":
-                        # Reasoning token streaming
+                        # Reasoning token streaming (AI SDK format)
                         delta = event.get("delta", "")
                         if delta:
-                            await context.emit_event(
+                            await self._emit_event_if_enabled(context,
                                 ExecutionEvent(
-                                    type=EventType.REASONING_TOKEN,
+                                    type=EventType.REASONING_DELTA,
                                     node_id=self.id,
-                                    content=delta,
+                                    delta=delta,  # AI SDK field
                                     metadata={
                                         "block_id": event.get("id"),
-                                        "event_subtype": "reasoning"
+                                        "node_type": "agent",
+                                        "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                     },
-                                raw_event=event,
+                                    raw_event=event,
                                 )
                             )
 
                     elif event_type == "reasoning-end":
-                        # Reasoning block completes
-                        await context.emit_event(
+                        # Reasoning block completes (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.REASONING_END,
                                 node_id=self.id,
-                                metadata={"block_id": event.get("id")},
-                            raw_event=event,
+                                metadata={
+                                    "block_id": event.get("id"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "response-metadata":
-                        # Usage statistics, model info, timing
-                        await context.emit_event(
+                        # Usage statistics, model info, timing (AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.RESPONSE_METADATA,
                                 node_id=self.id,
@@ -417,25 +586,31 @@ class AgentNode(BaseNode):
                                     "model_id": event.get("modelId"),
                                     "usage": event.get("usage"),
                                     "timestamp": event.get("timestamp"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "source":
-                        # Citations and grounding (Gemini)
-                        await context.emit_event(
+                        # Citations and grounding (Gemini, AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.SOURCE,
                                 node_id=self.id,
-                                metadata={"sources": event.get("sources", [])},
-                            raw_event=event,
+                                metadata={
+                                    "sources": event.get("sources", []),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
                         )
 
                     elif event_type == "file":
-                        # File attachment (multi-modal)
-                        await context.emit_event(
+                        # File attachment (multi-modal, AI SDK format)
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.FILE,
                                 node_id=self.id,
@@ -443,15 +618,17 @@ class AgentNode(BaseNode):
                                     "name": event.get("name"),
                                     "mime_type": event.get("mimeType"),
                                     "content": event.get("content"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                                 },
-                            raw_event=event,
+                                raw_event=event,
                             )
                         )
 
                     elif event_type.startswith("data-"):
                         # Custom data events (passthrough)
                         # Includes: data-*, data-rlm-*, etc.
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.CUSTOM_DATA,
                                 node_id=self.id,
@@ -473,7 +650,7 @@ class AgentNode(BaseNode):
                     content = event.content
                     if content:
                         full_response += content
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.TOKEN,
                                 node_id=self.id,
@@ -486,7 +663,7 @@ class AgentNode(BaseNode):
                     content = event.delta
                     if content:
                         full_response += content
-                        await context.emit_event(
+                        await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.TOKEN,
                                 node_id=self.id,
@@ -497,7 +674,7 @@ class AgentNode(BaseNode):
 
                 elif isinstance(event, str):
                     full_response += event
-                    await context.emit_event(
+                    await self._emit_event_if_enabled(context,
                         ExecutionEvent(
                             type=EventType.TOKEN,
                             node_id=self.id,
@@ -572,7 +749,7 @@ class AgentNode(BaseNode):
                 delta = getattr(event.data, "delta", "")
                 if delta:
                     full_response += delta
-                    await context.emit_event(
+                    await self._emit_event_if_enabled(context,
                         ExecutionEvent(
                             type=EventType.TOKEN,
                             node_id=self.id,
@@ -590,7 +767,7 @@ class AgentNode(BaseNode):
                     # Message generation started/completed
                     if hasattr(item, "status"):
                         if item.status == "completed":
-                            await context.emit_event(
+                            await self._emit_event_if_enabled(context,
                                 ExecutionEvent(
                                     type=EventType.MESSAGE_COMPLETE,
                                     node_id=self.id,
@@ -605,7 +782,7 @@ class AgentNode(BaseNode):
 
                     if hasattr(item, "status"):
                         if item.status == "in_progress":
-                            await context.emit_event(
+                            await self._emit_event_if_enabled(context,
                                 ExecutionEvent(
                                     type=EventType.TOOL_CALL_START,
                                     node_id=self.id,
@@ -617,7 +794,7 @@ class AgentNode(BaseNode):
                                 )
                             )
                         elif item.status == "completed":
-                            await context.emit_event(
+                            await self._emit_event_if_enabled(context,
                                 ExecutionEvent(
                                     type=EventType.TOOL_CALL_COMPLETE,
                                     node_id=self.id,
@@ -702,38 +879,46 @@ class AgentNode(BaseNode):
 
             # Handle orchestration events (step boundaries)
             if event_type == "start":
-                # Generation started - emit as NODE_START with raw_event
-                await context.emit_event(
+                # Generation started - emit as NODE_START with metadata
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
-                        metadata={"message_id": event_dict.get("messageId")},
+                        metadata={
+                            "message_id": event_dict.get("messageId"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
                         raw_event=event_dict,
                     )
                 )
 
             elif event_type == "start-step":
-                # Step begins
+                # Step begins (AI SDK format)
                 step_index = event_dict.get("stepIndex", 0)
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_START,
+                        type=EventType.START_STEP,
                         node_id=self.id,
-                        metadata={"step_index": step_index},
-                    raw_event=event_dict,
+                        metadata={
+                            "step_index": step_index,
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "finish-step":
-                # Step completes with metadata
+                # Step completes with metadata (AI SDK format)
                 step_index = event_dict.get("stepIndex", 0)
                 finish_reason = event_dict.get("finishReason", "stop")
                 usage = event_dict.get("usage")
                 response_meta = event_dict.get("response")
 
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.STEP_COMPLETE,
+                        type=EventType.FINISH_STEP,
                         node_id=self.id,
                         metadata={
                             "step_index": step_index,
@@ -741,27 +926,30 @@ class AgentNode(BaseNode):
                             "usage": usage,
                             "response": response_meta,
                             "had_tool_calls": event_dict.get("hadToolCalls", False),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
-                    raw_event=event_dict,
+                        raw_event=event_dict,
                     )
                 )
                 steps_completed = step_index + 1
 
             elif event_type == "finish":
-                # Overall execution complete
+                # Overall execution complete (AI SDK format)
                 total_usage = event_dict.get("totalUsage", {})
                 finish_reason = event_dict.get("finishReason", "stop")
 
-                # Emit to preserve raw_event
-                await context.emit_event(
+                # Emit finish event (AI SDK)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.RESPONSE_METADATA,
+                        type=EventType.FINISH,
                         node_id=self.id,
                         metadata={
                             "finish_reason": finish_reason,
                             "total_usage": total_usage,
                             "steps_completed": event_dict.get("stepsCompleted"),
-                            "event_subtype": "finish",
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
                         raw_event=event_dict,
                     )
@@ -769,157 +957,189 @@ class AgentNode(BaseNode):
 
             # Handle content events
             elif event_type == "text-start":
-                # Text block starts
-                await context.emit_event(
+                # Text block starts (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_START,
+                        type=EventType.TEXT_START,
                         node_id=self.id,
-                        metadata={"text_block_id": event_dict.get("id")},
-                    raw_event=event_dict,
+                        metadata={
+                            "text_block_id": event_dict.get("id"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "text-delta":
-                # Token streaming
+                # Token streaming (AI SDK format)
                 delta = event_dict.get("delta", "")
                 if delta:
                     full_response += delta
-                    await context.emit_event(
+                    await self._emit_event_if_enabled(context,
                         ExecutionEvent(
-                            type=EventType.TOKEN,
+                            type=EventType.TEXT_DELTA,
                             node_id=self.id,
-                            content=delta,
-                            metadata={"text_block_id": event_dict.get("id")},
-                        raw_event=event_dict,
+                            delta=delta,  # AI SDK field
+                            metadata={
+                                "text_block_id": event_dict.get("id"),
+                                "node_type": "agent",
+                                "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                            },
+                            raw_event=event_dict,
                         )
                     )
 
             elif event_type == "text-end":
-                # Text block completes
-                await context.emit_event(
+                # Text block completes (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.MESSAGE_COMPLETE,
+                        type=EventType.TEXT_END,
                         node_id=self.id,
-                        metadata={"text_block_id": event_dict.get("id")},
-                    raw_event=event_dict,
+                        metadata={
+                            "text_block_id": event_dict.get("id"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "tool-input-start":
-                # Tool call begins
-                await context.emit_event(
+                # Tool call begins (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.TOOL_CALL_START,
+                        type=EventType.TOOL_INPUT_START,
                         node_id=self.id,
                         metadata={
                             "tool_call_id": event_dict.get("toolCallId"),
                             "tool_name": event_dict.get("toolName"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
-                    raw_event=event_dict,
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "tool-input-delta":
-                # Tool argument chunk streaming
+                # Tool argument chunk streaming (AI SDK format)
                 delta = event_dict.get("inputTextDelta", "")
                 if delta:
-                    await context.emit_event(
+                    await self._emit_event_if_enabled(context,
                         ExecutionEvent(
-                            type=EventType.TOKEN,
+                            type=EventType.TOOL_INPUT_DELTA,
                             node_id=self.id,
-                            content=delta,
+                            delta=delta,  # AI SDK field
                             metadata={
                                 "tool_call_id": event_dict.get("toolCallId"),
-                                "event_subtype": "tool_input",
+                                "node_type": "agent",
+                                "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                             },
-                        raw_event=event_dict,
+                            raw_event=event_dict,
                         )
                     )
 
             elif event_type == "tool-input-available":
-                # Tool arguments complete and ready
-                await context.emit_event(
+                # Tool arguments complete and ready (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.TOOL_CALL_START,
+                        type=EventType.TOOL_INPUT_AVAILABLE,
                         node_id=self.id,
                         metadata={
                             "tool_call_id": event_dict.get("toolCallId"),
                             "tool_name": event_dict.get("toolName"),
                             "input": event_dict.get("input"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
-                    raw_event=event_dict,
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "tool-output-available":
-                # Tool execution result
-                await context.emit_event(
+                # Tool execution result (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.TOOL_CALL_COMPLETE,
+                        type=EventType.TOOL_OUTPUT_AVAILABLE,
                         node_id=self.id,
                         output=event_dict.get("output"),
                         metadata={
                             "tool_call_id": event_dict.get("toolCallId"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
-                    raw_event=event_dict,
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "error":
-                # Error occurred
+                # Error occurred (AI SDK format)
                 error_msg = event_dict.get("error", "Unknown error")
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
-                        type=EventType.NODE_ERROR,
+                        type=EventType.ERROR,
                         node_id=self.id,
                         error=error_msg,
-                    raw_event=event_dict,
+                        metadata={
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
                 raise RuntimeError(f"OpenAI agent error: {error_msg}")
 
             elif event_type == "reasoning-start":
-                # Reasoning block starts (o1/o3/Claude Extended Thinking)
-                await context.emit_event(
+                # Reasoning block starts (o1/o3/Claude Extended Thinking, AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.REASONING_START,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("id")},
-                    raw_event=event_dict,
+                        metadata={
+                            "block_id": event_dict.get("id"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "reasoning-delta":
-                # Reasoning token streaming
+                # Reasoning token streaming (AI SDK format)
                 delta = event_dict.get("delta", "")
                 if delta:
-                    await context.emit_event(
+                    await self._emit_event_if_enabled(context,
                         ExecutionEvent(
-                            type=EventType.REASONING_TOKEN,
+                            type=EventType.REASONING_DELTA,
                             node_id=self.id,
-                            content=delta,
+                            delta=delta,  # AI SDK field
                             metadata={
                                 "block_id": event_dict.get("id"),
-                                "event_subtype": "reasoning"
+                                "node_type": "agent",
+                                "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                             },
-                        raw_event=event_dict,
+                            raw_event=event_dict,
                         )
                     )
 
             elif event_type == "reasoning-end":
-                # Reasoning block completes
-                await context.emit_event(
+                # Reasoning block completes (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.REASONING_END,
                         node_id=self.id,
-                        metadata={"block_id": event_dict.get("id")},
-                    raw_event=event_dict,
+                        metadata={
+                            "block_id": event_dict.get("id"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "response-metadata":
-                # Usage statistics, model info, timing
-                await context.emit_event(
+                # Usage statistics, model info, timing (AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.RESPONSE_METADATA,
                         node_id=self.id,
@@ -928,25 +1148,31 @@ class AgentNode(BaseNode):
                             "model_id": event_dict.get("modelId"),
                             "usage": event_dict.get("usage"),
                             "timestamp": event_dict.get("timestamp"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
-                    raw_event=event_dict,
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "source":
-                # Citations and grounding (Gemini)
-                await context.emit_event(
+                # Citations and grounding (Gemini, AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.SOURCE,
                         node_id=self.id,
-                        metadata={"sources": event_dict.get("sources", [])},
-                    raw_event=event_dict,
+                        metadata={
+                            "sources": event_dict.get("sources", []),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type == "file":
-                # File attachment (multi-modal)
-                await context.emit_event(
+                # File attachment (multi-modal, AI SDK format)
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.FILE,
                         node_id=self.id,
@@ -954,15 +1180,17 @@ class AgentNode(BaseNode):
                             "name": event_dict.get("name"),
                             "mime_type": event_dict.get("mimeType"),
                             "content": event_dict.get("content"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
                         },
-                    raw_event=event_dict,
+                        raw_event=event_dict,
                     )
                 )
 
             elif event_type.startswith("data-"):
                 # Custom data events (passthrough)
                 # Includes: data-*, data-rlm-*, etc.
-                await context.emit_event(
+                await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.CUSTOM_DATA,
                         node_id=self.id,
@@ -1021,8 +1249,8 @@ class AgentNode(BaseNode):
             prompt: New system prompt
         """
         if self.agent_type == "vel":
-            if hasattr(self.agent, "system_prompt"):
-                self.agent.system_prompt = prompt
+            # Vel agents use 'instruction' parameter for system prompts
+            self.agent.instruction = prompt
         elif self.agent_type == "openai":
             if hasattr(self.agent, "instructions"):
                 self.agent.instructions = prompt

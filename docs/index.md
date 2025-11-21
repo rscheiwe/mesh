@@ -42,7 +42,7 @@ Build agent and multi-agent workflows as executable graphs with token-by-token s
 : Pluggable backends (SQLite, in-memory, custom)
 
 **Variable Resolution**
-: Template variables for dynamic workflows (`{{$question}}`, `{{node_id}}`, etc.)
+: Template variables with automatic natural language parsing (`{{$input.field}}`, `{{node_id}}`, etc.)
 
 **Production Ready**
 : Error handling, retries, structured logging, and SSE streaming
@@ -135,8 +135,8 @@ asyncio.run(main())
   </div>
 
   <div class="grid-item">
-    <h3><a href="guides/variables">Variables</a></h3>
-    <p>Template variable resolution</p>
+    <h3><a href="concepts/variables">Variables</a></h3>
+    <p>Dynamic data flow and automatic parsing</p>
   </div>
 
   <div class="grid-item">

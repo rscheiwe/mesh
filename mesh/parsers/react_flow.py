@@ -76,7 +76,9 @@ class ReactFlowParser:
         "llmAgentflow": "llm",
         "toolAgentflow": "tool",
         "conditionAgentflow": "condition",
-        "loopAgentflow": "loop",
+        "conditionflow": "condition",
+        "foreachAgentflow": "loop",  # ForEach uses loop handler (distinguishes via config)
+        "loopAgentflow": "loop",  # Loop backward jump uses same handler
         "endAgentflow": "end",
     }
 
@@ -167,7 +169,11 @@ class ReactFlowParser:
         """
         try:
             if node_type == "start":
-                return StartNode(id=node_id, config=config)
+                return StartNode(
+                    id=node_id,
+                    event_mode=config.get("eventMode", "full"),
+                    config=config
+                )
 
             elif node_type == "end":
                 return EndNode(id=node_id, config=config)
@@ -207,11 +213,15 @@ class ReactFlowParser:
         agent = self.registry.get_agent(agent_ref)
 
         system_prompt = config.get("systemPrompt") or config.get("system_prompt")
+        use_native_events = config.get("useNativeEvents", False)
+        event_mode = config.get("eventMode", "full")
 
         return AgentNode(
             id=node_id,
             agent=agent,
             system_prompt=system_prompt,
+            use_native_events=use_native_events,
+            event_mode=event_mode,
             config=config,
         )
 
@@ -224,6 +234,7 @@ class ReactFlowParser:
             temperature=config.get("temperature", 0.7),
             max_tokens=config.get("maxTokens") or config.get("max_tokens"),
             provider=config.get("provider", "openai"),
+            event_mode=config.get("eventMode", "full"),
             config=config,
         )
 
@@ -241,6 +252,7 @@ class ReactFlowParser:
         return ToolNode(
             id=node_id,
             tool_fn=tool_fn,
+            event_mode=config.get("eventMode", "full"),
             config=config,
         )
 
@@ -281,17 +293,47 @@ class ReactFlowParser:
             id=node_id,
             conditions=conditions,
             default_target=config.get("defaultTarget") or config.get("default_target"),
+            event_mode=config.get("eventMode", "full"),
             config=config,
         )
 
-    def _create_loop_node(self, node_id: str, config: Dict[str, Any]) -> LoopNode:
-        """Create LoopNode from config."""
-        return LoopNode(
-            id=node_id,
-            array_path=config.get("arrayPath", "$.items"),
-            max_iterations=config.get("maxIterations", 100),
-            config=config,
-        )
+    def _create_loop_node(self, node_id: str, config: Dict[str, Any]):
+        """Create LoopNode or ForEachNode from config based on parameters."""
+        from mesh.nodes.loop import ForEachNode, LoopNode as ActualLoopNode
+
+        # Check if this is a ForEach node (has arrayPath) or Loop node (has loopBackTo)
+        if "arrayPath" in config or "array_path" in config:
+            # ForEach node
+            return ForEachNode(
+                id=node_id,
+                array_path=config.get("arrayPath") or config.get("array_path", "$.items"),
+                max_iterations=config.get("maxIterations") or config.get("max_iterations", 100),
+                event_mode=config.get("eventMode", "full"),
+                config=config,
+            )
+        elif "loopBackTo" in config or "loop_back_to" in config:
+            # Loop node (backward jump)
+            loop_back_to = config.get("loopBackTo") or config.get("loop_back_to")
+            if not loop_back_to:
+                raise GraphValidationError(
+                    f"Loop node '{node_id}' missing 'loopBackTo' parameter"
+                )
+            return ActualLoopNode(
+                id=node_id,
+                loop_back_to=loop_back_to,
+                max_loop_count=config.get("maxLoopCount") or config.get("max_loop_count", 5),
+                event_mode=config.get("eventMode", "full"),
+                config=config,
+            )
+        else:
+            # Default to ForEach for backward compatibility
+            return ForEachNode(
+                id=node_id,
+                array_path=config.get("arrayPath", "$.items"),
+                max_iterations=config.get("maxIterations", 100),
+                event_mode=config.get("eventMode", "full"),
+                config=config,
+            )
 
     def _create_predicate(self, expression: str) -> Any:
         """Create a predicate function from an expression string.

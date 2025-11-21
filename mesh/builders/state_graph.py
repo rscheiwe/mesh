@@ -96,12 +96,14 @@ class StateGraph:
                 agent=node_or_config,
                 system_prompt=kwargs.get("system_prompt"),
                 use_native_events=kwargs.get("use_native_events", False),
+                event_mode=kwargs.get("event_mode", "full"),
                 config=kwargs.get("config", {}),
             )
         elif node_type == "tool":
             node = ToolNode(
                 id=node_id,
                 tool_fn=node_or_config,
+                event_mode=kwargs.get("event_mode", "full"),
                 config=kwargs.get("config", {}),
             )
         elif node_type == "llm":
@@ -112,6 +114,7 @@ class StateGraph:
                 temperature=kwargs.get("temperature", 0.7),
                 max_tokens=kwargs.get("max_tokens"),
                 provider=kwargs.get("provider", "openai"),
+                event_mode=kwargs.get("event_mode", "full"),
                 config=kwargs.get("config", {}),
             )
         elif node_type == "condition":
@@ -125,6 +128,7 @@ class StateGraph:
                     condition_routing="deterministic",
                     conditions=node_or_config,
                     default_target=kwargs.get("default_target"),
+                    event_mode=kwargs.get("event_mode", "full"),
                     config=kwargs.get("config", {}),
                 )
             elif condition_routing == "ai":
@@ -136,6 +140,7 @@ class StateGraph:
                     instructions=kwargs.get("instructions"),
                     scenarios=kwargs.get("scenarios"),
                     default_target=kwargs.get("default_target"),
+                    event_mode=kwargs.get("event_mode", "full"),
                     config=kwargs.get("config", {}),
                 )
             else:
@@ -152,6 +157,7 @@ class StateGraph:
                 id=node_id,
                 loop_back_to=kwargs["loop_back_to"],
                 max_loop_count=kwargs.get("max_loop_count", 5),
+                event_mode=kwargs.get("event_mode", "full"),
                 config=kwargs.get("config", {}),
             )
         elif node_type == "foreach":
@@ -160,10 +166,15 @@ class StateGraph:
                 id=node_id,
                 array_path=kwargs.get("array_path", "$.items"),
                 max_iterations=kwargs.get("max_iterations", 100),
+                event_mode=kwargs.get("event_mode", "full"),
                 config=kwargs.get("config", {}),
             )
         elif node_type == "start":
-            node = StartNode(id=node_id, config=kwargs.get("config", {}))
+            node = StartNode(
+                id=node_id,
+                event_mode=kwargs.get("event_mode", "full"),
+                config=kwargs.get("config", {})
+            )
         elif node_type == "end":
             node = EndNode(id=node_id, config=kwargs.get("config", {}))
         else:
