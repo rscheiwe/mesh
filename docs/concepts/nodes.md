@@ -11,7 +11,7 @@ Nodes are the building blocks of Mesh workflows. Each node performs a specific t
 
 ## Node Types
 
-Mesh provides 7 core node types:
+Mesh provides 8 core node types:
 
 | Type | Purpose | Key Features |
 |------|---------|--------------|
@@ -20,6 +20,7 @@ Mesh provides 7 core node types:
 | **AgentNode** | Vel/OpenAI agents | Streaming, auto-detection |
 | **LLMNode** | Direct LLM calls | Streaming, simple |
 | **ToolNode** | Python functions | Sync/async support |
+| **RAGNode** | Document retrieval | Vector search, context enrichment |
 | **ConditionNode** | Branching logic | Multiple conditions |
 | **LoopNode** | Array iteration | JSONPath selection |
 
@@ -185,7 +186,300 @@ def tool_with_context(input: dict, context: ExecutionContext) -> dict:
     return {"session": context.session_id}
 ```
 
-## 6. ConditionNode
+## 6. RAGNode
+
+Retrieve documents from vector stores for context enrichment in LLM prompts.
+
+**Basic Usage:**
+
+```python
+from mesh.nodes import RAGNode
+
+# Create RAG node
+rag_node = RAGNode(
+    id="rag_0",
+    query_template="{{$question}}",  # What to search for
+    top_k=5,                          # Number of documents
+    similarity_threshold=0.7,         # Minimum score
+    file_id="uuid-123",              # Filter to specific file
+)
+
+# Inject retriever (dependency injection pattern)
+rag_node.set_retriever(retriever)
+
+graph.add_node("rag_0", rag_node, node_type="rag")
+```
+
+**Parameters:**
+- `id`: Node identifier (e.g., `"rag_0"`)
+- `query_template`: Search query with variable support (default: `"{{$question}}"`)
+- `top_k`: Number of documents to retrieve (default: 5)
+- `similarity_threshold`: Minimum similarity score 0.0-1.0 (default: 0.7)
+- `file_id`: UUID of specific file to search (optional)
+- `folder_uuid`: UUID of folder to search across (optional)
+- `retriever_type`: Type of vector store - `"postgres"` or `"chroma"` (default: `"postgres"`)
+
+### Query Template - The Search Query
+
+The **Query Template** determines what text gets embedded and searched against your vector database chunks.
+
+**Default: User's Question**
+```python
+query_template="{{$question}}"  # Searches based on user input
+```
+
+Example flow:
+```
+User asks: "What cats are good in hot weather?"
+           ↓
+Query Template: {{$question}}
+           ↓
+Resolved: "What cats are good in hot weather?"
+           ↓
+Generate embedding: [0.123, 0.456, ...] (1536 dims)
+           ↓
+Search postgres: Returns top 5 similar chunks
+```
+
+**Dynamic Queries: Reference Previous Nodes**
+```python
+# Search based on LLM's refined query
+query_template="{{llm_0.output}}"
+
+# Combine multiple inputs
+query_template="Find docs about {{$question}} related to {{analyzer.topic}}"
+
+# Use tool output
+query_template="{{query_refiner.refined_query}}"
+```
+
+**Static Queries: Fixed Search**
+```python
+# Always search for specific topic
+query_template="product specifications and features"
+
+# Domain-specific search
+query_template="customer support policies"
+```
+
+### Output Structure
+
+RAGNode outputs a dictionary with:
+
+```python
+{
+    "formatted": "<CONTEXT>...formatted docs with metadata...</CONTEXT>",
+    "documents": [
+        {
+            "id": "uuid",
+            "document_id": "file-uuid",
+            "content": "...",
+            "page_number": 5,
+            "heading": "Section Title",
+            "similarity": 0.89,
+            "file_title": "Document.pdf",
+            "folder_uuid": "folder-uuid"
+        },
+        ...
+    ],
+    "query": "resolved query text",
+    "num_results": 5
+}
+```
+
+Access in downstream nodes:
+- `{{rag_0.output.formatted}}` - Pre-formatted context block for LLM prompts
+- `{{rag_0.output.documents}}` - Raw document array for custom processing
+- `{{rag_0.output.query}}` - The resolved query that was searched
+
+### Complete RAG Flow
+
+```python
+from mesh import StateGraph
+from mesh.nodes import RAGNode
+
+# 1. Create graph
+graph = StateGraph()
+
+# 2. Add RAG node
+rag_node = RAGNode(
+    id="rag_0",
+    query_template="{{$question}}",
+    top_k=5,
+    similarity_threshold=0.7,
+    file_id="file-uuid-123",  # Search specific file
+)
+
+# 3. Add LLM that uses retrieved context
+graph.add_node("llm", None, node_type="llm",
+               model="gpt-4",
+               system_prompt="""
+               Answer using this context:
+               {{rag_0.output.formatted}}
+
+               Question: {{$question}}
+               """)
+
+# 4. Connect nodes
+graph.add_edge("START", "rag_0")
+graph.add_edge("rag_0", "llm")
+
+# 5. Inject retriever (before execution)
+rag_node.set_retriever(my_retriever)
+
+# 6. Execute
+result = await graph.run(input="What cats are good in hot weather?")
+```
+
+### Retriever Setup
+
+RAGNode uses **dependency injection** for the retriever:
+
+```python
+# Example retriever interface
+class MyRetriever:
+    async def search_file(self, query: str, file_id: str,
+                         similarity_threshold: float, limit: int):
+        # Generate embedding
+        embedding = await generate_embedding(query)
+
+        # Query vector database
+        results = query_pgvector(embedding, file_id, similarity_threshold, limit)
+        return results
+
+    async def search_folder(self, query: str, folder_uuid: str,
+                           similarity_threshold: float, limit: int):
+        # Search across folder
+        ...
+
+# Inject into node
+retriever = MyRetriever()
+rag_node.set_retriever(retriever)
+```
+
+**In React Flow Graphs:**
+
+When using React Flow parser, inject retrievers after parsing:
+
+```python
+from mesh import ReactFlowParser
+from mesh.nodes import RAGNode
+
+# Parse graph
+graph = parser.parse(react_flow_json)
+
+# Inject retriever into all RAG nodes
+retriever = MyRetriever()
+for node in graph.nodes.values():
+    if isinstance(node, RAGNode):
+        node.set_retriever(retriever)
+
+# Execute
+await graph.run(input="...")
+```
+
+### File vs Folder Search
+
+**File Search** - Search within specific document:
+```python
+RAGNode(
+    id="rag_0",
+    file_id="550e8400-e29b-41d4-a716-446655440000",  # Specific file UUID
+    top_k=5
+)
+```
+
+**Folder Search** - Search across all documents in folder:
+```python
+RAGNode(
+    id="rag_0",
+    folder_uuid="abc-123-def",  # Folder UUID
+    top_k=10  # Aggregates top results across all files
+)
+```
+
+**Note:** Use either `file_id` OR `folder_uuid`, not both.
+
+### Multi-Source RAG
+
+Search multiple knowledge bases by using multiple RAG nodes:
+
+```python
+# Search product docs
+rag_products = RAGNode(
+    id="rag_products",
+    query_template="{{$question}}",
+    file_id="products-file-id",
+    top_k=3
+)
+
+# Search support tickets
+rag_support = RAGNode(
+    id="rag_support",
+    query_template="{{$question}}",
+    file_id="support-file-id",
+    top_k=3
+)
+
+# LLM uses both sources
+graph.add_node("llm", None, node_type="llm",
+               system_prompt="""
+               Product context: {{rag_products.output.formatted}}
+               Support context: {{rag_support.output.formatted}}
+
+               Question: {{$question}}
+               """)
+
+# Connect
+graph.add_edge("START", "rag_products")
+graph.add_edge("START", "rag_support")  # Parallel retrieval
+graph.add_edge("rag_products", "llm")
+graph.add_edge("rag_support", "llm")
+```
+
+### Query Refinement Pattern
+
+Use an LLM to refine the search query before retrieval:
+
+```python
+# Step 1: Refine query
+graph.add_node("refiner", None, node_type="llm",
+               model="gpt-4",
+               system_prompt="Rewrite as a search query: {{$question}}")
+
+# Step 2: Search with refined query
+rag_node = RAGNode(
+    id="rag_0",
+    query_template="{{refiner.output}}",  # Use LLM's refined query
+    top_k=5
+)
+
+# Step 3: Answer with context
+graph.add_node("answerer", None, node_type="llm",
+               system_prompt="Answer using: {{rag_0.output.formatted}}")
+
+# Connect
+graph.add_edge("START", "refiner")
+graph.add_edge("refiner", "rag_0")
+graph.add_edge("rag_0", "answerer")
+```
+
+### When to Use RAGNode
+
+**✅ Use RAGNode when:**
+- You need to ground LLM responses in specific documents
+- Working with large knowledge bases (docs, tickets, articles)
+- Need up-to-date information from your own data
+- Want to cite sources in LLM responses
+- Building Q&A systems over documentation
+
+**❌ Don't use RAGNode when:**
+- Information fits in LLM context window
+- No vector database available
+- Real-time web search needed (use tool with API instead)
+- Documents change too frequently for embeddings
+
+## 7. ConditionNode
 
 Conditional branching with multiple output paths.
 
@@ -251,7 +545,7 @@ graph.add_node("router", [
 ], node_type="condition", default_target="normal_handler")
 ```
 
-## 7. LoopNode
+## 8. LoopNode
 
 Iterate over arrays and execute downstream nodes for each item.
 

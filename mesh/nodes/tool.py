@@ -68,6 +68,21 @@ class ToolNode(BaseNode):
         self.function_name = tool_fn.__name__
         self.function_doc = inspect.getdoc(tool_fn) or ""
 
+    def set_tool_function(self, tool_fn: Callable) -> None:
+        """Inject tool function after node creation.
+
+        This allows backends to load tools from databases and inject them
+        after graph parsing but before execution.
+
+        Args:
+            tool_fn: Tool function to execute
+        """
+        self.tool_fn = tool_fn
+        self.is_async = inspect.iscoroutinefunction(tool_fn)
+        self.signature = inspect.signature(tool_fn)
+        self.function_name = tool_fn.__name__
+        self.function_doc = inspect.getdoc(tool_fn) or ""
+
     async def _emit_event_if_enabled(self, context: ExecutionContext, event: "ExecutionEvent") -> None:
         """Emit event based on event_mode.
 
@@ -150,26 +165,14 @@ class ToolNode(BaseNode):
                 f"Tool function '{self.function_name}' failed: {str(e)}"
             ) from e
 
-        # Emit complete event with output preview
-        output_preview = str(result)[:100] if result else None
-        await self._emit_event_if_enabled(
-            context,
-            ExecutionEvent(
-                type=EventType.NODE_COMPLETE,
-                node_id=self.id,
-                output=output_preview,
-                metadata={
-                    "tool_name": self.function_name,
-                    "node_type": "tool",
-                },
-            )
-        )
-
+        # Return result wrapped in output key for consistent access pattern
+        # Users can access via {{tool_id.output}} or {{tool_id.output.field}}
         return NodeResult(
-            output=result,
+            output={"output": result},
             metadata={
                 "tool_name": self.function_name,
                 "tool_doc": self.function_doc,
+                "node_type": "tool",
             },
         )
 

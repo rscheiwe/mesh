@@ -4,6 +4,7 @@ This module parses React Flow JSON format (used by Flowise) into
 Mesh ExecutionGraph structures.
 """
 
+import json
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, ValidationError, Field
 
@@ -15,6 +16,8 @@ from mesh.nodes.llm import LLMNode
 from mesh.nodes.tool import ToolNode
 from mesh.nodes.condition import ConditionNode, Condition
 from mesh.nodes.loop import LoopNode
+from mesh.nodes.rag import RAGNode
+from mesh.nodes.data_handler import DataHandlerNode
 from mesh.utils.registry import NodeRegistry
 from mesh.utils.errors import GraphValidationError
 
@@ -75,6 +78,8 @@ class ReactFlowParser:
         "agentAgentflow": "agent",
         "llmAgentflow": "llm",
         "toolAgentflow": "tool",
+        "ragAgentflow": "rag",
+        "dataHandlerAgentflow": "data_handler",
         "conditionAgentflow": "condition",
         "conditionflow": "condition",
         "foreachAgentflow": "loop",  # ForEach uses loop handler (distinguishes via config)
@@ -187,6 +192,12 @@ class ReactFlowParser:
             elif node_type == "tool":
                 return self._create_tool_node(node_id, config)
 
+            elif node_type == "rag":
+                return self._create_rag_node(node_id, config)
+
+            elif node_type == "data_handler":
+                return self._create_data_handler_node(node_id, config)
+
             elif node_type == "condition":
                 return self._create_condition_node(node_id, config)
 
@@ -202,15 +213,65 @@ class ReactFlowParser:
             ) from e
 
     def _create_agent_node(self, node_id: str, config: Dict[str, Any]) -> AgentNode:
-        """Create AgentNode from config."""
-        agent_ref = config.get("agent")
-        if not agent_ref:
-            raise GraphValidationError(
-                f"Agent node '{node_id}' missing 'agent' reference"
-            )
+        """Create AgentNode from config.
 
-        # Get agent from registry
-        agent = self.registry.get_agent(agent_ref)
+        Supports two modes:
+        1. Registry mode: config has 'agent' reference (legacy, for pre-configured agents)
+        2. Inline mode: config has model/provider/etc. (instantiates Vel Agent on the fly)
+
+        Tools can be provided inline via 'tools' array with:
+        - code: Python function code
+        - name: Optional tool name
+        - description: Optional tool description
+        """
+        agent_ref = config.get("agent")
+
+        # Mode 1: Registry mode (legacy)
+        if agent_ref:
+            # Get pre-registered agent from registry
+            agent = self.registry.get_agent(agent_ref)
+
+        # Mode 2: Inline mode (preferred) - instantiate Vel Agent from config
+        else:
+            try:
+                from vel import Agent as VelAgent
+                from vel.tools import ToolSpec
+            except ImportError:
+                raise GraphValidationError(
+                    f"Agent node '{node_id}' requires Vel SDK. Install with: pip install vel"
+                )
+
+            # Get agent configuration
+            model_config = config.get("model", {})
+            if isinstance(model_config, str):
+                # Simple string model name
+                model_config = {"model": model_config}
+
+            # Extract model parameters
+            provider = config.get("provider") or model_config.get("provider", "openai")
+            model = config.get("modelName") or model_config.get("model", "gpt-4o-mini")
+            temperature = config.get("temperature")
+            if temperature is None:
+                temperature = model_config.get("temperature", 0.7)
+            max_tokens = config.get("maxTokens") or config.get("max_tokens") or model_config.get("max_tokens")
+
+            # Process tools array (inline tool definitions)
+            tools = []
+            tools_config = config.get("tools", [])
+            if tools_config:
+                tools = self._create_tools_from_config(tools_config, node_id)
+
+            # Instantiate Vel Agent with tools
+            agent = VelAgent(
+                id=node_id,
+                model={
+                    "provider": provider,
+                    "model": model,
+                    "temperature": float(temperature),
+                    **({"max_tokens": max_tokens} if max_tokens else {}),
+                },
+                tools=tools if tools else None,  # Pass tools to agent
+            )
 
         system_prompt = config.get("systemPrompt") or config.get("system_prompt")
         use_native_events = config.get("useNativeEvents", False)
@@ -224,6 +285,83 @@ class ReactFlowParser:
             event_mode=event_mode,
             config=config,
         )
+
+    def _create_tools_from_config(
+        self,
+        tools_config: List[Dict[str, Any]],
+        node_id: str
+    ) -> List[Any]:
+        """Create ToolSpec instances from inline tool definitions.
+
+        Args:
+            tools_config: List of tool configurations, each with:
+                - code: Python function code (required)
+                - name: Optional tool name (auto-generated if not provided)
+                - description: Optional tool description (extracted from docstring if not provided)
+            node_id: Parent node ID (for error messages)
+
+        Returns:
+            List of ToolSpec instances
+
+        Raises:
+            GraphValidationError: If tool creation fails
+        """
+        try:
+            from vel.tools import ToolSpec
+        except ImportError:
+            raise GraphValidationError(
+                f"Tools require Vel SDK. Install with: pip install vel"
+            )
+
+        tools = []
+        for idx, tool_config in enumerate(tools_config):
+            code = tool_config.get("code")
+            if not code:
+                raise GraphValidationError(
+                    f"Tool {idx} in node '{node_id}' missing 'code' field"
+                )
+
+            # Execute code to extract function
+            namespace = {}
+            try:
+                exec(code, namespace)
+            except Exception as e:
+                raise GraphValidationError(
+                    f"Failed to execute tool code in node '{node_id}' tool {idx}: {e}"
+                )
+
+            # Find the function
+            func_name = tool_config.get("name")
+            if func_name:
+                if func_name not in namespace:
+                    raise GraphValidationError(
+                        f"Function '{func_name}' not found in tool code for node '{node_id}' tool {idx}"
+                    )
+                func = namespace[func_name]
+            else:
+                # Find first callable (skip builtins)
+                func = None
+                for name, obj in namespace.items():
+                    if callable(obj) and not name.startswith('_'):
+                        func = obj
+                        func_name = name
+                        break
+
+                if not func:
+                    raise GraphValidationError(
+                        f"No callable function found in tool code for node '{node_id}' tool {idx}"
+                    )
+
+            # Create ToolSpec using new dynamic tools API
+            tool_spec = ToolSpec.from_function(
+                func,
+                name=func_name,
+                description=tool_config.get("description"),  # Optional override
+            )
+
+            tools.append(tool_spec)
+
+        return tools
 
     def _create_llm_node(self, node_id: str, config: Dict[str, Any]) -> LLMNode:
         """Create LLMNode from config."""
@@ -239,19 +377,129 @@ class ReactFlowParser:
         )
 
     def _create_tool_node(self, node_id: str, config: Dict[str, Any]) -> ToolNode:
-        """Create ToolNode from config."""
-        tool_ref = config.get("tool")
-        if not tool_ref:
-            raise GraphValidationError(
-                f"Tool node '{node_id}' missing 'tool' reference"
-            )
+        """Create ToolNode from config.
 
-        # Get tool from registry
-        tool_fn = self.registry.get_tool(tool_ref)
+        Supports three modes:
+        1. Registry mode: config has 'tool' reference (for pre-registered tools)
+        2. Placeholder mode: config has 'toolUuid' (tool function injected later by backend)
+        3. Inline mode: config has 'code' (executes Python code directly)
+        """
+        # Parse bindings if it's a JSON string (from frontend)
+        bindings = config.get("bindings")
+        if isinstance(bindings, str):
+            try:
+                config["bindings"] = json.loads(bindings)
+            except json.JSONDecodeError:
+                # If invalid JSON, keep as empty dict
+                config["bindings"] = {}
+
+        tool_ref = config.get("tool")
+        tool_uuid = config.get("toolUuid")
+        code = config.get("code")
+
+        # Mode 1: Registry mode (for pre-registered tools)
+        if tool_ref:
+            tool_fn = self.registry.get_tool(tool_ref)
+
+        # Mode 2: Placeholder mode - tool UUID stored, function injected later
+        elif tool_uuid:
+            # Create a placeholder function that will be replaced by backend
+            # The backend is responsible for loading from DB and calling set_tool_function()
+            def placeholder_tool(*args, **kwargs):
+                raise RuntimeError(
+                    f"Tool '{tool_uuid}' not injected. "
+                    f"Backend must load tool from DB and call node.set_tool_function() before execution."
+                )
+            tool_fn = placeholder_tool
+
+        # Mode 3: Inline mode - execute code directly
+        elif code:
+            tool_fn = self._execute_tool_code(code, config)
+
+        else:
+            raise GraphValidationError(
+                f"Tool node '{node_id}' missing 'tool' reference, 'toolUuid', or 'code'"
+            )
 
         return ToolNode(
             id=node_id,
             tool_fn=tool_fn,
+            event_mode=config.get("eventMode", "full"),
+            config=config,
+        )
+
+    def _execute_tool_code(self, code: str, config: Dict[str, Any], imports=None, func_name=None):
+        """Execute Python code to get tool function.
+
+        Args:
+            code: Python code defining the tool function
+            config: Tool configuration
+            imports: Optional list of import statements
+            func_name: Optional function name to extract
+
+        Returns:
+            Callable tool function
+        """
+        # Execute imports
+        if imports:
+            for imp in imports:
+                exec(imp)
+
+        # Execute code
+        namespace = {}
+        exec(code, namespace)
+
+        # Find the function
+        if func_name:
+            if func_name not in namespace:
+                raise GraphValidationError(f"Function '{func_name}' not found in code")
+            return namespace[func_name]
+        else:
+            # Find first callable
+            for name, obj in namespace.items():
+                if callable(obj) and not name.startswith('_'):
+                    return obj
+
+            raise GraphValidationError("No callable function found in code")
+
+    def _create_rag_node(self, node_id: str, config: Dict[str, Any]) -> RAGNode:
+        """Create RAGNode from config.
+
+        Note: Retriever instance must be injected after parsing via set_retriever().
+        """
+        return RAGNode(
+            id=node_id,
+            query_template=config.get("queryTemplate") or config.get("query_template", "{{$question}}"),
+            top_k=config.get("topK") or config.get("top_k", 5),
+            similarity_threshold=config.get("similarityThreshold") or config.get("similarity_threshold", 0.7),
+            file_id=config.get("fileId") or config.get("file_id"),
+            folder_uuid=config.get("folderUuid") or config.get("folder_uuid"),
+            retriever_type=config.get("retrieverType") or config.get("retriever_type", "postgres"),
+            event_mode=config.get("eventMode", "full"),
+            config=config,
+        )
+
+    def _create_data_handler_node(self, node_id: str, config: Dict[str, Any]) -> DataHandlerNode:
+        """Create DataHandlerNode from config.
+
+        Note: DB session getter must be injected after parsing via set_db_session_getter().
+        """
+        # Parse params - handle both string and dict
+        params_value = config.get("params", {})
+        if isinstance(params_value, str):
+            import json
+            try:
+                params = json.loads(params_value) if params_value else {}
+            except json.JSONDecodeError:
+                params = {}
+        else:
+            params = params_value or {}
+
+        return DataHandlerNode(
+            id=node_id,
+            db_source=config.get("dbSource") or config.get("db_source", "postgres"),
+            query=config.get("query", ""),
+            params=params,
             event_mode=config.get("eventMode", "full"),
             config=config,
         )

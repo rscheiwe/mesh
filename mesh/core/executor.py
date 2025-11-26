@@ -144,11 +144,13 @@ class Executor:
                 # Get node instance
                 node = self.graph.get_node(current.node_id)
 
-                # Emit node start event (skip for Agent/LLM nodes - they emit their own with raw_event)
+                # Emit node start event (skip for nodes that emit their own with metadata)
                 from mesh.nodes.agent import AgentNode
                 from mesh.nodes.llm import LLMNode
+                from mesh.nodes.tool import ToolNode
+                from mesh.nodes.start import StartNode
 
-                if not isinstance(node, (AgentNode, LLMNode)):
+                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode)):
                     yield ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=current.node_id,

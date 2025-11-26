@@ -232,7 +232,11 @@ class LLMNode(BaseNode):
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
-                        metadata={"provider": "openai"},
+                        metadata={
+                            "node_type": "llm",
+                            "provider": "openai",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
@@ -489,7 +493,11 @@ class LLMNode(BaseNode):
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
-                        metadata={"provider": "openai"},
+                        metadata={
+                            "node_type": "llm",
+                            "provider": "anthropic",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )
@@ -733,7 +741,11 @@ class LLMNode(BaseNode):
                     ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=self.id,
-                        metadata={"provider": "gemini"},
+                        metadata={
+                            "node_type": "llm",
+                            "provider": "gemini",
+                            "model": self.model,
+                        },
                         raw_event=event_dict,
                     )
                 )

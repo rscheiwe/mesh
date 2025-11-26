@@ -14,17 +14,20 @@ class EventType(str, Enum):
 
     Based on Vercel AI SDK V5 UI Stream Protocol.
     Matches Vel event format for seamless frontend integration.
+
+    Mesh-specific events are prefixed with 'data-' for AI SDK compatibility.
+    These are handled via the onData callback in useChat.
     """
 
-    # Execution lifecycle (Mesh-specific, not in AI SDK)
-    EXECUTION_START = "execution_start"
-    EXECUTION_COMPLETE = "execution_complete"
-    EXECUTION_ERROR = "execution_error"
+    # Execution lifecycle (Mesh-specific, prefixed with data- for AI SDK)
+    EXECUTION_START = "data-execution-start"
+    EXECUTION_COMPLETE = "data-execution-complete"
+    EXECUTION_ERROR = "data-execution-error"
 
-    # Node lifecycle (Mesh-specific, not in AI SDK)
-    NODE_START = "node_start"
-    NODE_COMPLETE = "node_complete"
-    NODE_ERROR = "node_error"
+    # Node lifecycle (Mesh-specific, prefixed with data- for AI SDK)
+    NODE_START = "data-node-start"
+    NODE_COMPLETE = "data-node-complete"
+    NODE_ERROR = "data-node-error"
 
     # AI SDK V5 - Generation lifecycle
     START = "start"  # Message/generation start
@@ -59,11 +62,11 @@ class EventType(str, Enum):
     SOURCE = "source"  # Citations, grounding
     FILE = "file"  # File attachments
 
-    # State updates (Mesh-specific)
-    STATE_UPDATE = "state_update"
+    # State updates (Mesh-specific, prefixed with data- for AI SDK)
+    STATE_UPDATE = "data-state-update"
 
     # Custom data events (AI SDK V5 data-* pattern)
-    CUSTOM_DATA = "custom_data"
+    CUSTOM_DATA = "data-custom"
 
     # Legacy aliases for backwards compatibility (deprecated)
     TOKEN = "text-delta"  # Alias for TEXT_DELTA
@@ -144,44 +147,91 @@ class ExecutionEvent:
     def to_dict(self) -> Dict[str, Any]:
         """Convert event to dictionary for AI SDK serialization.
 
-        Includes node metadata on every event for comprehensive tracking.
+        For data-* events (custom Mesh events), wraps payload in 'data' field
+        per AI SDK V5 convention (like data-artifact-* events).
+
+        For standard AI SDK events, includes only AI SDK fields at top level,
+        with Mesh-specific metadata in '_mesh' field (underscore prefix to avoid validation).
         """
-        result = {
-            "type": self.type.value if isinstance(self.type, EventType) else self.type,
-            "timestamp": self.timestamp.isoformat(),
-        }
+        event_type = self.type.value if isinstance(self.type, EventType) else self.type
 
-        # Node identification (always included if available)
-        if self.node_id:
-            result["node_id"] = self.node_id
+        # For data-* events, wrap everything in 'data' field
+        if event_type.startswith("data-"):
+            payload = {
+                "timestamp": self.timestamp.isoformat(),
+            }
 
-        # AI SDK streaming content field
-        if self.delta is not None:
-            result["delta"] = self.delta
+            if self.node_id:
+                payload["node_id"] = self.node_id
+            if self.delta is not None:
+                payload["delta"] = self.delta
+            if self.content is not None:
+                payload["content"] = self.content
+            if self.output is not None:
+                payload["output"] = self.output
+            if self.error is not None:
+                payload["errorText"] = self.error
+            if self.metadata:
+                payload["metadata"] = self.metadata
+            if self.raw_event is not None:
+                if isinstance(self.raw_event, dict):
+                    payload["raw_event"] = self.raw_event
+                else:
+                    payload["raw_event_type"] = type(self.raw_event).__name__
 
-        # Backwards compatibility content field
-        if self.content is not None:
-            result["content"] = self.content
+            return {
+                "type": event_type,
+                "data": payload
+            }
 
-        # Other fields
-        if self.output is not None:
-            result["output"] = self.output
-        if self.error is not None:
-            result["error"] = self.error
+        # Standard AI SDK events - pass through ALL fields from raw_event if available
+        # This preserves required AI SDK fields like 'id', 'toolCallId', etc.
+        else:
+            # If we have a raw_event dict, use it as the base (it has all AI SDK fields)
+            if self.raw_event is not None and isinstance(self.raw_event, dict):
+                result = dict(self.raw_event)  # Copy all fields from original event
+                # Ensure type is set correctly (in case it was modified)
+                result["type"] = event_type
 
-        # Metadata (includes node_type, node_name, etc.)
-        if self.metadata:
-            result["metadata"] = self.metadata
+                # Remove legacy 'error' field if present (Vel uses this, but AI SDK expects 'errorText')
+                result.pop("error", None)
 
-        # Include raw_event if present (for dict/serializable types)
-        if self.raw_event is not None:
-            if isinstance(self.raw_event, dict):
-                result["raw_event"] = self.raw_event
+                # AI SDK finish-step and finish events should only have type field
+                # Remove extra fields that Vel includes but AI SDK doesn't accept
+                if event_type == "finish-step":
+                    result = {"type": "finish-step"}
+                elif event_type == "finish":
+                    result = {"type": "finish"}
+
+                # Override with any fields explicitly set on ExecutionEvent
+                # This allows Mesh to update delta, content, etc. while preserving other fields
+                if self.delta is not None:
+                    result["delta"] = self.delta
+                if self.content is not None:
+                    result["content"] = self.content
+                if self.output is not None:
+                    result["output"] = self.output
+                if self.error is not None:
+                    result["errorText"] = self.error
             else:
-                # For non-dict objects, include type info
-                result["raw_event_type"] = type(self.raw_event).__name__
+                # No raw_event - build from scratch with available fields
+                result = {"type": event_type}
 
-        return result
+                # Add AI SDK standard fields only
+                if self.delta is not None:
+                    result["delta"] = self.delta
+                if self.content is not None:
+                    result["content"] = self.content
+                if self.output is not None:
+                    result["output"] = self.output
+                if self.error is not None:
+                    result["errorText"] = self.error
+
+            # Note: Mesh metadata (timestamp, node_id, metadata) are NOT included
+            # in standard AI SDK events because they fail validation.
+            # Use data-* events for Mesh orchestration metadata instead.
+
+            return result
 
 
 # Helper functions for creating custom data-* events
@@ -357,7 +407,7 @@ def transform_event_for_transient_mode(
         data_payload["output"] = event.output
 
     if event.error is not None:
-        data_payload["error"] = event.error
+        data_payload["errorText"] = event.error
 
     # Include original metadata (contains node_type, node_name, etc.)
     if event.metadata:

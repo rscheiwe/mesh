@@ -75,11 +75,11 @@ class StartNode(BaseNode):
         Returns:
             NodeResult with input as output
         """
-        # Emit start event
+        # Emit node start event (not EXECUTION_START - that's emitted by the executor)
         await self._emit_event_if_enabled(
             context,
             ExecutionEvent(
-                type=EventType.EXECUTION_START,
+                type=EventType.NODE_START,
                 node_id=self.id,
                 metadata={"node_type": "start"},
             )

@@ -8,6 +8,8 @@ from mesh.nodes.llm import LLMNode
 from mesh.nodes.tool import ToolNode
 from mesh.nodes.condition import ConditionNode, Condition, SimpleCondition
 from mesh.nodes.loop import LoopNode, ForEachNode
+from mesh.nodes.rag import RAGNode
+from mesh.nodes.data_handler import DataHandlerNode
 
 __all__ = [
     "Node",
@@ -23,4 +25,6 @@ __all__ = [
     "SimpleCondition",
     "LoopNode",
     "ForEachNode",
+    "RAGNode",
+    "DataHandlerNode",
 ]

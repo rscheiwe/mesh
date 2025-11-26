@@ -451,7 +451,7 @@ class AgentNode(BaseNode):
 
                     elif event_type == "error":
                         # Error occurred (AI SDK format)
-                        error_msg = event.get("error", "Unknown error")
+                        error_msg = event.get("errorText", "Unknown error")
                         await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.ERROR,
@@ -1074,7 +1074,7 @@ class AgentNode(BaseNode):
 
             elif event_type == "error":
                 # Error occurred (AI SDK format)
-                error_msg = event_dict.get("error", "Unknown error")
+                error_msg = event_dict.get("errorText", "Unknown error")
                 await self._emit_event_if_enabled(context,
                     ExecutionEvent(
                         type=EventType.ERROR,
