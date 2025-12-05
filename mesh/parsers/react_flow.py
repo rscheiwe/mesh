@@ -223,13 +223,25 @@ class ReactFlowParser:
         - code: Python function code
         - name: Optional tool name
         - description: Optional tool description
+
+        Structured output can be enabled via 'outputSchema' (JSON Schema).
+        Non-streaming mode can be enabled via 'streaming: false'.
         """
         agent_ref = config.get("agent")
+
+        # Parse output schema if provided (JSON Schema -> Pydantic model)
+        output_type = None
+        output_schema = config.get("outputSchema")
+        if output_schema:
+            output_type = self._create_output_type_from_schema(output_schema, node_id)
 
         # Mode 1: Registry mode (legacy)
         if agent_ref:
             # Get pre-registered agent from registry
             agent = self.registry.get_agent(agent_ref)
+            # If output_type specified, we need to set it on the agent
+            if output_type and hasattr(agent, 'output_type'):
+                agent.output_type = output_type
 
         # Mode 2: Inline mode (preferred) - instantiate Vel Agent from config
         else:
@@ -261,7 +273,7 @@ class ReactFlowParser:
             if tools_config:
                 tools = self._create_tools_from_config(tools_config, node_id)
 
-            # Instantiate Vel Agent with tools
+            # Instantiate Vel Agent with tools and optional output_type
             agent = VelAgent(
                 id=node_id,
                 model={
@@ -271,11 +283,13 @@ class ReactFlowParser:
                     **({"max_tokens": max_tokens} if max_tokens else {}),
                 },
                 tools=tools if tools else None,  # Pass tools to agent
+                output_type=output_type,  # Pass structured output type
             )
 
         system_prompt = config.get("systemPrompt") or config.get("system_prompt")
         use_native_events = config.get("useNativeEvents", False)
         event_mode = config.get("eventMode", "full")
+        streaming = config.get("streaming", True)  # Default to streaming
 
         return AgentNode(
             id=node_id,
@@ -283,8 +297,113 @@ class ReactFlowParser:
             system_prompt=system_prompt,
             use_native_events=use_native_events,
             event_mode=event_mode,
+            streaming=streaming,
             config=config,
         )
+
+    def _create_output_type_from_schema(
+        self,
+        schema: Any,
+        node_id: str
+    ) -> type:
+        """Create a Pydantic model from JSON Schema.
+
+        Args:
+            schema: JSON Schema (dict or string)
+            node_id: Node ID for error messages
+
+        Returns:
+            Pydantic model class or List[model] for arrays
+        """
+        from typing import List, Optional, Any as TypingAny
+        from pydantic import create_model, Field
+
+        # Parse schema if it's a string
+        if isinstance(schema, str):
+            try:
+                schema = json.loads(schema)
+            except json.JSONDecodeError as e:
+                raise GraphValidationError(
+                    f"Invalid JSON in outputSchema for node '{node_id}': {e}"
+                )
+
+        if not isinstance(schema, dict):
+            raise GraphValidationError(
+                f"outputSchema for node '{node_id}' must be a JSON Schema object"
+            )
+
+        schema_type = schema.get("type")
+
+        # Handle array type - returns List[ItemModel]
+        if schema_type == "array":
+            items_schema = schema.get("items", {})
+            item_model = self._create_pydantic_model_from_schema(
+                items_schema,
+                f"{node_id}_Item"
+            )
+            return List[item_model]
+
+        # Handle object type - returns single model
+        elif schema_type == "object":
+            return self._create_pydantic_model_from_schema(schema, f"{node_id}_Output")
+
+        else:
+            raise GraphValidationError(
+                f"outputSchema for node '{node_id}' must have type 'object' or 'array'"
+            )
+
+    def _create_pydantic_model_from_schema(
+        self,
+        schema: Dict[str, Any],
+        model_name: str
+    ) -> type:
+        """Create a Pydantic model from JSON Schema object definition.
+
+        Args:
+            schema: JSON Schema object definition
+            model_name: Name for the generated model
+
+        Returns:
+            Pydantic model class
+        """
+        from typing import Optional, Any as TypingAny, List
+        from pydantic import create_model, Field
+
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+
+        # Map JSON Schema types to Python types
+        type_map = {
+            "string": str,
+            "integer": int,
+            "number": float,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+
+        fields = {}
+        for prop_name, prop_schema in properties.items():
+            prop_type = prop_schema.get("type", "string")
+            python_type = type_map.get(prop_type, TypingAny)
+
+            # Handle nested arrays
+            if prop_type == "array":
+                items_type = prop_schema.get("items", {}).get("type", "string")
+                item_python_type = type_map.get(items_type, TypingAny)
+                python_type = List[item_python_type]
+
+            # Make optional if not required
+            if prop_name not in required:
+                python_type = Optional[python_type]
+                default = prop_schema.get("default", None)
+            else:
+                default = ...  # Required field
+
+            description = prop_schema.get("description", "")
+            fields[prop_name] = (python_type, Field(default=default, description=description))
+
+        return create_model(model_name, **fields)
 
     def _create_tools_from_config(
         self,

@@ -54,6 +54,7 @@ class AgentNode(BaseNode):
         system_prompt: Optional[str] = None,
         use_native_events: bool = False,
         event_mode: str = "full",
+        streaming: bool = True,
         config: Dict[str, Any] = None,
     ):
         """Initialize agent node.
@@ -69,6 +70,9 @@ class AgentNode(BaseNode):
                 - "status_only": Only data-mesh-node-start/complete - progress indicators only
                 - "transient_events": All events but prefixed with data-agent-node-* - render differently
                 - "silent": No events to FE - invisible execution
+            streaming: If True (default), use run_stream() for token-by-token streaming.
+                      If False, use run() for non-streaming execution (faster, returns immediately).
+                      Non-streaming is useful for intermediate nodes or when structured output is needed.
             config: Additional configuration
         """
         super().__init__(id, config or {})
@@ -76,6 +80,7 @@ class AgentNode(BaseNode):
         self.system_prompt = system_prompt
         self.use_native_events = use_native_events
         self.event_mode = event_mode
+        self.streaming = streaming
         self.agent_type = self._detect_agent_type(agent)
 
         # Initialize Vel SDK translator if available and not using native events
@@ -192,9 +197,12 @@ class AgentNode(BaseNode):
                 # Update agent system prompt if possible
                 self._update_system_prompt(resolved_prompt)
 
-            # Execute based on agent type
+            # Execute based on agent type and streaming mode
             if self.agent_type == "vel":
-                result = await self._execute_vel_agent(message, context)
+                if self.streaming:
+                    result = await self._execute_vel_agent(message, context)
+                else:
+                    result = await self._execute_vel_agent_nonstreaming(message, context)
             elif self.agent_type == "openai":
                 result = await self._execute_openai_agent(message, context)
             else:
@@ -274,15 +282,19 @@ class AgentNode(BaseNode):
 
         Vel's API: run_stream(input: Dict, session_id: str) -> AsyncGenerator[Dict]
 
+        If the agent has output_type set, captures the data-object-complete event
+        and returns validated structured data.
+
         Args:
             message: Input message
             context: Execution context
 
         Returns:
-            NodeResult with agent response
+            NodeResult with agent response (structured if output_type is set)
         """
         full_response = ""
         chat_history = []
+        structured_output = None  # Captured from data-object-complete event
 
         try:
             # Vel expects input as a Dict
@@ -627,7 +639,13 @@ class AgentNode(BaseNode):
 
                     elif event_type.startswith("data-"):
                         # Custom data events (passthrough)
-                        # Includes: data-*, data-rlm-*, etc.
+                        # Includes: data-*, data-rlm-*, data-object-*, etc.
+
+                        # Capture structured output from data-object-complete
+                        if event_type == "data-object-complete":
+                            data = event.get("data", {})
+                            structured_output = data.get("object")
+
                         await self._emit_event_if_enabled(context,
                             ExecutionEvent(
                                 type=EventType.CUSTOM_DATA,
@@ -692,6 +710,21 @@ class AgentNode(BaseNode):
             {"role": "assistant", "content": full_response},
         ]
 
+        # Check if agent has output_type for structured output
+        output_type = getattr(self.agent, 'output_type', None)
+        if output_type and structured_output:
+            # Return structured output directly
+            return NodeResult(
+                output=structured_output,
+                chat_history=chat_history,
+                metadata={
+                    "agent_type": "vel",
+                    "agent_id": getattr(self.agent, "id", "unknown"),
+                    "structured_output": True,
+                    "output_type": str(output_type),
+                },
+            )
+
         return NodeResult(
             output={"content": full_response},
             chat_history=chat_history,
@@ -700,6 +733,101 @@ class AgentNode(BaseNode):
                 "agent_id": getattr(self.agent, "id", "unknown"),
             },
         )
+
+    async def _execute_vel_agent_nonstreaming(
+        self,
+        message: str,
+        context: ExecutionContext,
+    ) -> NodeResult:
+        """Execute Vel agent without streaming (using run() method).
+
+        This is faster than streaming and returns the complete response immediately.
+        Useful for intermediate nodes or when structured output is needed.
+
+        If the agent has output_type set, returns the validated structured data
+        instead of raw text.
+
+        Args:
+            message: Input message
+            context: Execution context
+
+        Returns:
+            NodeResult with agent response (structured if output_type is set)
+        """
+        try:
+            # Vel expects input as a Dict
+            input_data = {"message": message}
+
+            # Call run() (non-streaming) with session_id
+            result = await self.agent.run(
+                input=input_data,
+                session_id=context.session_id,
+            )
+
+            # Check if agent has output_type for structured output
+            output_type = getattr(self.agent, 'output_type', None)
+
+            # Build chat history
+            chat_history = [
+                {"role": "user", "content": message},
+            ]
+
+            if output_type:
+                # Result is a validated Pydantic instance
+                # Serialize for output
+                if hasattr(result, 'model_dump'):
+                    output_data = result.model_dump()
+                elif hasattr(result, 'dict'):
+                    output_data = result.dict()
+                elif isinstance(result, list):
+                    # List of Pydantic models
+                    output_data = []
+                    for item in result:
+                        if hasattr(item, 'model_dump'):
+                            output_data.append(item.model_dump())
+                        elif hasattr(item, 'dict'):
+                            output_data.append(item.dict())
+                        else:
+                            output_data.append(item)
+                else:
+                    output_data = result
+
+                chat_history.append({
+                    "role": "assistant",
+                    "content": str(result),  # String representation for history
+                })
+
+                return NodeResult(
+                    output=output_data,
+                    chat_history=chat_history,
+                    metadata={
+                        "agent_type": "vel",
+                        "agent_id": getattr(self.agent, "id", "unknown"),
+                        "streaming": False,
+                        "structured_output": True,
+                        "output_type": str(output_type),
+                    },
+                )
+            else:
+                # Result is a string
+                full_response = str(result) if result else ""
+                chat_history.append({
+                    "role": "assistant",
+                    "content": full_response,
+                })
+
+                return NodeResult(
+                    output={"content": full_response},
+                    chat_history=chat_history,
+                    metadata={
+                        "agent_type": "vel",
+                        "agent_id": getattr(self.agent, "id", "unknown"),
+                        "streaming": False,
+                    },
+                )
+
+        except Exception as e:
+            raise RuntimeError(f"Vel agent execution failed: {str(e)}") from e
 
     async def _execute_openai_agent(
         self,
