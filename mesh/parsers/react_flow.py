@@ -76,6 +76,7 @@ class ReactFlowParser:
     NODE_TYPE_MAP = {
         "startAgentflow": "start",
         "agentAgentflow": "agent",
+        "agentFlowAgentflow": "agent_flow",  # Subflow execution node
         "llmAgentflow": "llm",
         "toolAgentflow": "tool",
         "ragAgentflow": "rag",
@@ -87,13 +88,26 @@ class ReactFlowParser:
         "endAgentflow": "end",
     }
 
-    def __init__(self, registry: NodeRegistry):
+    def __init__(self, registry: NodeRegistry, flow_loader: Optional[callable] = None):
         """Initialize parser with node registry.
 
         Args:
             registry: NodeRegistry for resolving agents and tools
+            flow_loader: Optional function to load subflows from database.
+                        Signature: (flow_uuid: str, version: Optional[int]) -> Dict[str, Any]
+                        Returns React Flow JSON for the subflow.
         """
         self.registry = registry
+        self.flow_loader = flow_loader
+        self._expanding_flows: set = set()  # Track flows being expanded to detect cycles
+
+    def set_flow_loader(self, loader: callable):
+        """Set the flow loader for subflow expansion.
+
+        Args:
+            loader: Function to load flow JSON from database
+        """
+        self.flow_loader = loader
 
     def parse(self, json_data: Dict[str, Any]) -> ExecutionGraph:
         """Parse React Flow JSON into ExecutionGraph.
@@ -114,9 +128,55 @@ class ReactFlowParser:
         except ValidationError as e:
             raise GraphValidationError(f"Invalid React Flow JSON: {e}")
 
-        # Build nodes
-        nodes = {}
+        # First pass: expand any agent_flow nodes inline
+        expanded_nodes = []
+        expanded_edges = list(flow_data.edges)
+
         for node_data in flow_data.nodes:
+            flowise_type = node_data.data.get("name") or node_data.type
+            mesh_type = self.NODE_TYPE_MAP.get(flowise_type, flowise_type)
+
+            if mesh_type == "agent_flow":
+                # Expand this subflow inline
+                subflow_nodes, subflow_edges, entry_node_id, exit_node_id = \
+                    self._expand_agent_flow(node_data)
+
+                # Add expanded nodes
+                expanded_nodes.extend(subflow_nodes)
+
+                # Rewire edges: any edge pointing TO this node should point to entry
+                # Any edge pointing FROM this node should come from exit
+                new_edges = []
+                for edge in expanded_edges:
+                    if edge.target == node_data.id:
+                        # Redirect to subflow entry
+                        new_edges.append(ReactFlowEdge(
+                            source=edge.source,
+                            target=entry_node_id,
+                            source_handle=edge.source_handle,
+                            target_handle=edge.target_handle,
+                        ))
+                    elif edge.source == node_data.id:
+                        # Redirect from subflow exit
+                        new_edges.append(ReactFlowEdge(
+                            source=exit_node_id,
+                            target=edge.target,
+                            source_handle=edge.source_handle,
+                            target_handle=edge.target_handle,
+                        ))
+                    else:
+                        new_edges.append(edge)
+
+                expanded_edges = new_edges
+
+                # Add subflow internal edges
+                expanded_edges.extend(subflow_edges)
+            else:
+                expanded_nodes.append(node_data)
+
+        # Build nodes from expanded list
+        nodes = {}
+        for node_data in expanded_nodes:
             node_id = node_data.id
             # Get node type from data.name or type
             flowise_type = node_data.data.get("name") or node_data.type
@@ -142,7 +202,7 @@ class ReactFlowParser:
                 source_handle=edge.source_handle,
                 target_handle=edge.target_handle,
             )
-            for edge in flow_data.edges
+            for edge in expanded_edges
         ]
 
         # Construct and validate graph
@@ -150,6 +210,118 @@ class ReactFlowParser:
         graph.validate()
 
         return graph
+
+    def _expand_agent_flow(
+        self,
+        node_data: ReactFlowNode
+    ) -> tuple:
+        """Expand an agent_flow node into its constituent nodes.
+
+        Args:
+            node_data: The agent_flow node to expand
+
+        Returns:
+            Tuple of (nodes, edges, entry_node_id, exit_node_id)
+        """
+        config = node_data.data.get("inputs", {})
+        flow_uuid = config.get("flowUuid")
+        node_id = node_data.id
+
+        if not flow_uuid:
+            raise GraphValidationError(
+                f"Agent flow node '{node_id}' missing required 'flowUuid'"
+            )
+
+        # Check for circular dependency
+        if flow_uuid in self._expanding_flows:
+            raise GraphValidationError(
+                f"Circular dependency detected: flow '{flow_uuid}' references itself"
+            )
+
+        if not self.flow_loader:
+            raise GraphValidationError(
+                f"Cannot expand agent flow node '{node_id}': no flow_loader set. "
+                "Call parser.set_flow_loader() before parsing."
+            )
+
+        # Mark as expanding
+        self._expanding_flows.add(flow_uuid)
+
+        try:
+            # Load the subflow
+            flow_version = config.get("flowVersion", "latest")
+            version = config.get("specificVersion") if flow_version == "specific" else None
+
+            subflow_json = self.flow_loader(flow_uuid, version)
+            if not subflow_json:
+                raise GraphValidationError(
+                    f"Agent flow '{flow_uuid}' not found"
+                )
+
+            # Prefix all node IDs to avoid collisions
+            prefix = f"{node_id}__"
+
+            # Parse subflow nodes with prefixed IDs
+            subflow_nodes = []
+            entry_node_id = None
+            exit_node_id = None
+
+            raw_nodes = subflow_json.get("nodes", [])
+            raw_edges = subflow_json.get("edges", [])
+
+            for raw_node in raw_nodes:
+                # Create prefixed node
+                prefixed_id = f"{prefix}{raw_node['id']}"
+                node_type = raw_node.get("data", {}).get("name") or raw_node.get("type", "")
+
+                # Track entry (start) and exit nodes
+                if node_type == "startAgentflow":
+                    entry_node_id = prefixed_id
+                elif node_type == "endAgentflow":
+                    exit_node_id = prefixed_id
+
+                # Create new node data with prefixed ID
+                prefixed_node = ReactFlowNode(
+                    id=prefixed_id,
+                    type=raw_node.get("type", ""),
+                    data=raw_node.get("data", {}),
+                    position=raw_node.get("position"),
+                )
+                subflow_nodes.append(prefixed_node)
+
+            # If no explicit end node, find the last node (no outgoing edges)
+            if not exit_node_id:
+                outgoing_sources = {e.get("source") for e in raw_edges}
+                for raw_node in raw_nodes:
+                    if raw_node["id"] not in outgoing_sources:
+                        node_type = raw_node.get("data", {}).get("name") or raw_node.get("type", "")
+                        if node_type != "startAgentflow":
+                            exit_node_id = f"{prefix}{raw_node['id']}"
+                            break
+
+            # If still no exit, use the last non-start node
+            if not exit_node_id and subflow_nodes:
+                for raw_node in reversed(raw_nodes):
+                    node_type = raw_node.get("data", {}).get("name") or raw_node.get("type", "")
+                    if node_type != "startAgentflow":
+                        exit_node_id = f"{prefix}{raw_node['id']}"
+                        break
+
+            # Create prefixed edges
+            subflow_edges = []
+            for raw_edge in raw_edges:
+                subflow_edges.append(ReactFlowEdge(
+                    source=f"{prefix}{raw_edge['source']}",
+                    target=f"{prefix}{raw_edge['target']}",
+                    source_handle=raw_edge.get("sourceHandle"),
+                    target_handle=raw_edge.get("targetHandle"),
+                ))
+
+            return subflow_nodes, subflow_edges, entry_node_id, exit_node_id
+
+        finally:
+            # Remove from expanding set
+            self._expanding_flows.discard(flow_uuid)
 
     def _create_node(
         self,
@@ -185,6 +357,14 @@ class ReactFlowParser:
 
             elif node_type == "agent":
                 return self._create_agent_node(node_id, config)
+
+            elif node_type == "agent_flow":
+                # Agent flow nodes are expanded inline during parse, not created as nodes
+                # This should not be reached - agent_flow handling is in parse()
+                raise GraphValidationError(
+                    f"Agent flow node '{node_id}' should be expanded during parsing. "
+                    "Ensure flow_loader is set on the parser."
+                )
 
             elif node_type == "llm":
                 return self._create_llm_node(node_id, config)
