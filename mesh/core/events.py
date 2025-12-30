@@ -65,6 +65,13 @@ class EventType(str, Enum):
     # State updates (Mesh-specific, prefixed with data- for AI SDK)
     STATE_UPDATE = "data-state-update"
 
+    # Approval workflow events (Mesh-specific, prefixed with data- for AI SDK)
+    # Used for human-in-the-loop workflows where execution pauses for approval
+    APPROVAL_PENDING = "data-approval-pending"  # Execution paused, awaiting approval
+    APPROVAL_RECEIVED = "data-approval-received"  # Approval granted, resuming
+    APPROVAL_REJECTED = "data-approval-rejected"  # Approval denied
+    APPROVAL_TIMEOUT = "data-approval-timeout"  # Approval timed out
+
     # Custom data events (AI SDK V5 data-* pattern)
     CUSTOM_DATA = "data-custom"
 

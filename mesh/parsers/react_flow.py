@@ -18,6 +18,7 @@ from mesh.nodes.condition import ConditionNode, Condition
 from mesh.nodes.loop import LoopNode
 from mesh.nodes.rag import RAGNode
 from mesh.nodes.data_handler import DataHandlerNode
+from mesh.nodes.conversation import ConversationNode
 from mesh.utils.registry import NodeRegistry
 from mesh.utils.errors import GraphValidationError
 
@@ -77,6 +78,7 @@ class ReactFlowParser:
         "startAgentflow": "start",
         "agentAgentflow": "agent",
         "agentFlowAgentflow": "agent_flow",  # Subflow execution node
+        "conversationAgentflow": "conversation",  # Multi-turn parameter extraction
         "llmAgentflow": "llm",
         "toolAgentflow": "tool",
         "ragAgentflow": "rag",
@@ -358,6 +360,9 @@ class ReactFlowParser:
             elif node_type == "agent":
                 return self._create_agent_node(node_id, config)
 
+            elif node_type == "conversation":
+                return self._create_conversation_node(node_id, config)
+
             elif node_type == "agent_flow":
                 # Agent flow nodes are expanded inline during parse, not created as nodes
                 # This should not be reached - agent_flow handling is in parse()
@@ -478,6 +483,85 @@ class ReactFlowParser:
             use_native_events=use_native_events,
             event_mode=event_mode,
             streaming=streaming,
+            config=config,
+        )
+
+    def _create_conversation_node(self, node_id: str, config: Dict[str, Any]) -> ConversationNode:
+        """Create ConversationNode from config.
+
+        ConversationNode is a specialized AgentNode that loops with the user
+        until extraction conditions are met (all required fields extracted).
+
+        Config fields:
+            - provider: LLM provider (openai, anthropic, gemini)
+            - modelName: Model name
+            - systemPrompt: Extraction instructions
+            - extractionFields: Comma-separated list of required fields
+            - outputSchema: JSON Schema for structured output validation
+            - tools: Optional tools (e.g., lookup_account)
+            - maxTurns: Maximum conversation turns (default: 10)
+            - conversationId: Unique identifier for resume
+
+        Returns:
+            ConversationNode instance
+        """
+        try:
+            from vel import Agent as VelAgent
+            from vel.tools import ToolSpec
+        except ImportError:
+            raise GraphValidationError(
+                f"Conversation node '{node_id}' requires Vel SDK. Install with: pip install vel"
+            )
+
+        # Get model configuration
+        provider = config.get("provider", "openai")
+        model = config.get("modelName", "gpt-4o-mini")
+        temperature = config.get("temperature", 0.7)
+        max_tokens = config.get("maxTokens")
+
+        # Process tools array (inline tool definitions)
+        tools = []
+        tools_config = config.get("tools", [])
+        if tools_config:
+            tools = self._create_tools_from_config(tools_config, node_id)
+
+        # Parse output schema if provided
+        output_type = None
+        output_schema = config.get("outputSchema")
+        if output_schema:
+            output_type = self._create_output_type_from_schema(output_schema, node_id)
+
+        # Parse extraction fields from comma-separated string
+        extraction_fields = []
+        fields_str = config.get("extractionFields", "")
+        if fields_str:
+            extraction_fields = [f.strip() for f in fields_str.split(",") if f.strip()]
+
+        # Get system prompt (extraction instructions)
+        system_prompt = config.get("systemPrompt") or config.get("system_prompt")
+
+        # Create Vel Agent for the conversation
+        agent = VelAgent(
+            id=f"{node_id}_agent",
+            model={
+                "provider": provider,
+                "model": model,
+                "temperature": float(temperature),
+                **({"max_tokens": max_tokens} if max_tokens else {}),
+            },
+            tools=tools if tools else None,
+            instruction=system_prompt,  # Set system prompt on agent
+        )
+
+        return ConversationNode(
+            id=node_id,
+            agent=agent,
+            output_schema=output_type,
+            extraction_fields=extraction_fields,
+            max_turns=config.get("maxTurns", 10),
+            conversation_id=config.get("conversationId") or f"conversation_{node_id}",
+            system_prompt=system_prompt,
+            event_mode=config.get("eventMode", "full"),
             config=config,
         )
 

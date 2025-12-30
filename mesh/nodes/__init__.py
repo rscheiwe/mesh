@@ -10,6 +10,8 @@ from mesh.nodes.condition import ConditionNode, Condition, SimpleCondition
 from mesh.nodes.loop import LoopNode, ForEachNode
 from mesh.nodes.rag import RAGNode
 from mesh.nodes.data_handler import DataHandlerNode
+from mesh.nodes.approval import ApprovalNode, ApprovalResult, approve, reject
+from mesh.nodes.conversation import ConversationNode, continue_conversation
 
 __all__ = [
     "Node",
@@ -27,4 +29,10 @@ __all__ = [
     "ForEachNode",
     "RAGNode",
     "DataHandlerNode",
+    "ApprovalNode",
+    "ApprovalResult",
+    "approve",
+    "reject",
+    "ConversationNode",
+    "continue_conversation",
 ]

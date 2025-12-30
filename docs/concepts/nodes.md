@@ -11,7 +11,7 @@ Nodes are the building blocks of Mesh workflows. Each node performs a specific t
 
 ## Node Types
 
-Mesh provides 8 core node types:
+Mesh provides 9 core node types:
 
 | Type | Purpose | Key Features |
 |------|---------|--------------|
@@ -23,6 +23,7 @@ Mesh provides 8 core node types:
 | **RAGNode** | Document retrieval | Vector search, context enrichment |
 | **ConditionNode** | Branching logic | Multiple conditions |
 | **LoopNode** | Array iteration | JSONPath selection |
+| **ApprovalNode** | Human-in-the-loop | Pause/resume, approval workflows |
 
 ## 1. StartNode
 
@@ -618,6 +619,113 @@ graph.add_node("greet", None, node_type="llm",
 graph.add_edge("START", "loop")
 graph.add_edge("loop", "greet")
 ```
+
+## 9. ApprovalNode
+
+Pause execution for human-in-the-loop approval before continuing.
+
+**Usage:**
+
+```python
+from mesh.nodes import ApprovalNode, approve, reject
+
+graph.add_node("approval", ApprovalNode(
+    id="approval",
+    approval_id="plan_approval",
+    approval_message="Please review the plan before execution",
+    data_extractor=lambda input: {
+        "plan_title": input.get("title"),
+        "step_count": len(input.get("steps", [])),
+    },
+))
+
+graph.add_edge("planner", "approval")
+graph.add_edge("approval", "executor")
+```
+
+**Parameters:**
+- `approval_id`: Unique identifier for this approval point (required)
+- `approval_message`: Message displayed to the approver (optional)
+- `data_extractor`: Function to transform input into display data (optional)
+- `timeout_seconds`: Timeout in seconds (not yet implemented)
+
+**Execution Flow:**
+
+```
+Node executes
+     │
+     ▼
+┌─────────────┐
+│  Approval   │ ──▶ Emit APPROVAL_PENDING event
+│    Node     │ ──▶ Return approval_pending=True
+└──────┬──────┘ ──▶ Execution PAUSES
+       │
+       ▼
+┌─────────────┐
+│   User      │     (External decision)
+│  Decision   │
+└──────┬──────┘
+       │
+       ├─ approve() ──▶ APPROVAL_RECEIVED ──▶ Resume execution
+       │
+       └─ reject()  ──▶ APPROVAL_REJECTED ──▶ End execution
+```
+
+**Handling Approval:**
+
+```python
+from mesh import Executor, ExecutionContext, MemoryBackend
+from mesh.nodes import approve, reject
+
+executor = Executor(graph.compile(), MemoryBackend())
+context = ExecutionContext(...)
+
+async for event in executor.execute(input, context):
+    if event.metadata.get("status") == "waiting_for_approval":
+        # Display approval data to user
+        approval_data = event.metadata.get("approval_data", {})
+        print(f"Plan: {approval_data.get('plan_title')}")
+
+        # Get user decision
+        user_input = input("Approve? (y/n): ")
+
+        if user_input.lower() == 'y':
+            result = approve()
+        else:
+            result = reject(reason="User declined")
+
+        # Resume execution
+        async for resume_event in executor.resume(context, result):
+            # Process resumed events
+            pass
+```
+
+**Approval with Modified Data:**
+
+```python
+# Approve and modify the input for the next node
+result = approve(
+    modified_data={"plan": modified_plan},
+    approver_id="user@example.com",
+    metadata={"approved_at": datetime.now().isoformat()},
+)
+```
+
+**Key Features:**
+- Pauses execution until approval received
+- Stores pending state for resume
+- Supports data transformation for display
+- Handles both approval and rejection
+- Tracks approver identity and metadata
+
+**When to Use:**
+- Research pipelines needing plan review
+- Content workflows with editorial approval
+- Financial transactions requiring authorization
+- Deployment pipelines with manual gates
+- Any critical decision point needing human oversight
+
+See the [Deep Research Guide](../guides/deep-research) for a complete example.
 
 ## Node Configuration
 

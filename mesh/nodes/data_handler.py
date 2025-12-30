@@ -211,9 +211,16 @@ class DataHandlerNode(ToolNode):
         resolver = VariableResolver(context)
         for key, value in list(resolved.items()):
             if isinstance(value, str) and "{{" in value:
-                # Resolve template
-                import asyncio
-                resolved[key] = asyncio.run(resolver.resolve(value))
+                # Resolve template synchronously using the pattern and internal method
+                import re
+                def replacer(match):
+                    variable = match.group(1).strip()
+                    try:
+                        val = resolver._resolve_single(variable)
+                        return str(val) if val is not None else ""
+                    except Exception:
+                        return ""
+                resolved[key] = re.sub(r"\{\{(.*?)\}\}", replacer, value)
 
         return resolved
 

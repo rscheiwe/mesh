@@ -17,6 +17,15 @@ from mesh.core.state import ExecutionContext
 from mesh.utils.errors import NodeExecutionError
 
 
+class ExecutionStatus:
+    """Execution status constants."""
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WAITING_FOR_APPROVAL = "waiting_for_approval"
+    APPROVAL_REJECTED = "approval_rejected"
+
+
 @dataclass
 class NodeQueueItem:
     """Item in the execution queue.
@@ -222,6 +231,46 @@ class Executor:
                     timestamp=datetime.now(),
                     metadata=result.metadata,
                 )
+
+                # Check for approval pending - pause execution
+                if result.approval_pending:
+                    # Save execution state for resume
+                    pending_state = {
+                        "queue": [(item.node_id, item.inputs) for item in queue],
+                        "waiting_nodes": {
+                            k: {
+                                "node_id": v.node_id,
+                                "received_inputs": v.received_inputs,
+                                "expected_inputs": list(v.expected_inputs),
+                            }
+                            for k, v in waiting_nodes.items()
+                        },
+                        "loop_counts": loop_counts,
+                        "current_node_id": current.node_id,
+                        "approval_id": result.approval_id,
+                        "approval_data": result.approval_data,
+                        "iteration": iteration,
+                    }
+                    context.state["_pending_execution"] = pending_state
+
+                    # Persist state
+                    if self.state_backend:
+                        await self.state_backend.save(context.session_id, context.state)
+
+                    # Yield completion event with approval status
+                    yield ExecutionEvent(
+                        type=EventType.EXECUTION_COMPLETE,
+                        output=result.output,
+                        timestamp=datetime.now(),
+                        metadata={
+                            "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                            "approval_id": result.approval_id,
+                            "approval_data": result.approval_data,
+                            "iterations": iteration,
+                            "trace_id": context.trace_id,
+                        },
+                    )
+                    return  # Exit generator - execution paused
 
                 # Process outputs and queue children
                 await self._process_node_outputs(
@@ -500,3 +549,297 @@ class Executor:
         else:
             # Return as-is with parent IDs as keys
             return inputs
+
+    async def resume(
+        self,
+        context: ExecutionContext,
+        approval_result: "ApprovalResult",
+    ) -> AsyncIterator[ExecutionEvent]:
+        """Resume execution after an approval node pause.
+
+        This method continues execution from where it was paused by an ApprovalNode.
+        It loads the saved execution state from context and processes the approval
+        result to determine how to continue.
+
+        Args:
+            context: Execution context (should have been reloaded from state_backend)
+            approval_result: Result of the approval decision
+
+        Yields:
+            ExecutionEvent: Streaming execution events
+
+        Raises:
+            ValueError: If no pending execution state found
+            NodeExecutionError: If a node execution fails
+
+        Example:
+            >>> # After approval node paused execution:
+            >>> approval_result = ApprovalResult(approved=True)
+            >>> async for event in executor.resume(context, approval_result):
+            ...     print(event.type)
+        """
+        from mesh.nodes.approval import ApprovalResult as ApprovalResultClass
+
+        # Set event emitter in context
+        context._event_emitter = self.events
+
+        # Get pending execution state
+        pending_state = context.state.get("_pending_execution")
+        if not pending_state:
+            raise ValueError(
+                "No pending execution state found. Cannot resume without a prior approval pause."
+            )
+
+        # Emit approval result event
+        if approval_result.approved:
+            yield ExecutionEvent(
+                type=EventType.APPROVAL_RECEIVED,
+                metadata={
+                    "approval_id": pending_state.get("approval_id"),
+                    "approver_id": approval_result.approver_id,
+                    "modified_data": approval_result.modified_data is not None,
+                },
+            )
+        else:
+            yield ExecutionEvent(
+                type=EventType.APPROVAL_REJECTED,
+                metadata={
+                    "approval_id": pending_state.get("approval_id"),
+                    "rejection_reason": approval_result.rejection_reason,
+                    "approver_id": approval_result.approver_id,
+                },
+            )
+
+            # Emit execution complete with rejection status
+            yield ExecutionEvent(
+                type=EventType.EXECUTION_COMPLETE,
+                output=None,
+                timestamp=datetime.now(),
+                metadata={
+                    "status": ExecutionStatus.APPROVAL_REJECTED,
+                    "rejection_reason": approval_result.rejection_reason,
+                    "trace_id": context.trace_id,
+                },
+            )
+            return  # End execution on rejection
+
+        # Restore execution state
+        queue: List[NodeQueueItem] = []
+        for node_id, inputs in pending_state.get("queue", []):
+            queue.append(NodeQueueItem(node_id=node_id, inputs=inputs))
+
+        waiting_nodes: Dict[str, WaitingNode] = {}
+        for node_id, data in pending_state.get("waiting_nodes", {}).items():
+            waiting_nodes[node_id] = WaitingNode(
+                node_id=data["node_id"],
+                received_inputs=data["received_inputs"],
+                expected_inputs=set(data["expected_inputs"]),
+            )
+
+        loop_counts = pending_state.get("loop_counts", {})
+        iteration = pending_state.get("iteration", 0)
+
+        # Determine the input for the next node
+        # If approval modified data, use that; otherwise use the original approval output
+        if approval_result.modified_data is not None:
+            resume_input = approval_result.modified_data
+        else:
+            resume_input = pending_state.get("approval_data", {}).get("input", {})
+
+        # Get the node that was waiting for approval
+        approval_node_id = pending_state.get("current_node_id")
+
+        # Check if this is a conversation node that needs to continue (not move to children)
+        # Conversation nodes set conversation_pending=True in approval_data
+        is_conversation_continue = pending_state.get("approval_data", {}).get("conversation_pending", False)
+
+        if approval_node_id:
+            if is_conversation_continue:
+                # Conversation node - re-execute the same node with full resume_input
+                # resume_input contains: message, user_message, and messages array
+                # The ConversationNode will use the messages array for history (stateless pattern)
+                queue.append(NodeQueueItem(node_id=approval_node_id, inputs=resume_input))
+            else:
+                # Regular approval node - proceed to children
+                child_node_ids = self.graph.get_children(approval_node_id)
+                for child_id in child_node_ids:
+                    # Get parent dependencies for this child
+                    parent_ids = self.graph.get_parents(child_id)
+
+                    # Single parent - queue immediately
+                    if len(parent_ids) == 1:
+                        queue.append(NodeQueueItem(node_id=child_id, inputs=resume_input))
+
+        # Clear pending execution state
+        del context.state["_pending_execution"]
+        if self.state_backend:
+            await self.state_backend.save(context.session_id, context.state)
+
+        # Continue execution loop
+        while queue and iteration < self.max_iterations:
+            iteration += 1
+            current = queue.pop(0)
+
+            try:
+                # Get node instance
+                node = self.graph.get_node(current.node_id)
+
+                # Emit node start event (skip for nodes that emit their own with metadata)
+                from mesh.nodes.agent import AgentNode
+                from mesh.nodes.llm import LLMNode
+                from mesh.nodes.tool import ToolNode
+                from mesh.nodes.start import StartNode
+
+                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode)):
+                    yield ExecutionEvent(
+                        type=EventType.NODE_START,
+                        node_id=current.node_id,
+                        timestamp=datetime.now(),
+                    )
+
+                # Set up event queue for streaming during execution
+                event_queue: asyncio.Queue[Optional[ExecutionEvent]] = asyncio.Queue()
+
+                async def event_listener(event: ExecutionEvent):
+                    """Capture events emitted during node execution."""
+                    await event_queue.put(event)
+
+                # Register listener
+                self.events.on(event_listener)
+
+                # Execute node in background task
+                execute_task = asyncio.create_task(
+                    node.execute(input=current.inputs, context=context)
+                )
+
+                # Yield events as they stream in
+                result = None
+                while True:
+                    # Check if execution is complete
+                    if execute_task.done():
+                        # Get result
+                        result = await execute_task
+                        # Drain any remaining events
+                        while not event_queue.empty():
+                            try:
+                                evt = event_queue.get_nowait()
+                                if evt:
+                                    yield evt
+                            except asyncio.QueueEmpty:
+                                break
+                        break
+
+                    # Wait for next event or task completion
+                    try:
+                        evt = await asyncio.wait_for(event_queue.get(), timeout=0.01)
+                        if evt:
+                            yield evt
+                    except asyncio.TimeoutError:
+                        continue
+
+                # Remove listener
+                self.events.off(event_listener)
+
+                # Update state
+                if result.state:
+                    context.state.update(result.state)
+                    if self.state_backend:
+                        await self.state_backend.save(context.session_id, context.state)
+
+                # Update chat history
+                if result.chat_history:
+                    context.chat_history.extend(result.chat_history)
+
+                # Store execution data
+                context.add_executed_node(current.node_id, result.output)
+
+                # Emit node complete event
+                yield ExecutionEvent(
+                    type=EventType.NODE_COMPLETE,
+                    node_id=current.node_id,
+                    output=result.output,
+                    timestamp=datetime.now(),
+                    metadata=result.metadata,
+                )
+
+                # Check for approval pending - pause execution again
+                if result.approval_pending:
+                    # Save execution state for resume
+                    pending_state = {
+                        "queue": [(item.node_id, item.inputs) for item in queue],
+                        "waiting_nodes": {
+                            k: {
+                                "node_id": v.node_id,
+                                "received_inputs": v.received_inputs,
+                                "expected_inputs": list(v.expected_inputs),
+                            }
+                            for k, v in waiting_nodes.items()
+                        },
+                        "loop_counts": loop_counts,
+                        "current_node_id": current.node_id,
+                        "approval_id": result.approval_id,
+                        "approval_data": result.approval_data,
+                        "iteration": iteration,
+                    }
+                    context.state["_pending_execution"] = pending_state
+
+                    if self.state_backend:
+                        await self.state_backend.save(context.session_id, context.state)
+
+                    yield ExecutionEvent(
+                        type=EventType.EXECUTION_COMPLETE,
+                        output=result.output,
+                        timestamp=datetime.now(),
+                        metadata={
+                            "status": ExecutionStatus.WAITING_FOR_APPROVAL,
+                            "approval_id": result.approval_id,
+                            "approval_data": result.approval_data,
+                            "iterations": iteration,
+                            "trace_id": context.trace_id,
+                        },
+                    )
+                    return
+
+                # Process outputs and queue children
+                await self._process_node_outputs(
+                    node_id=current.node_id,
+                    result=result,
+                    queue=queue,
+                    waiting_nodes=waiting_nodes,
+                    loop_counts=loop_counts,
+                    context=context,
+                )
+
+            except Exception as e:
+                error_msg = str(e)
+                yield ExecutionEvent(
+                    type=EventType.NODE_ERROR,
+                    node_id=current.node_id,
+                    error=error_msg,
+                    timestamp=datetime.now(),
+                )
+                raise NodeExecutionError(current.node_id, error_msg, e)
+
+        # Check for iteration limit
+        if iteration >= self.max_iterations:
+            yield ExecutionEvent(
+                type=EventType.EXECUTION_ERROR,
+                error=f"Execution exceeded maximum iterations ({self.max_iterations})",
+            )
+
+        # Get final output
+        final_output = None
+        if context.executed_data:
+            final_output = context.executed_data[-1].get("output")
+
+        # Emit execution complete event
+        yield ExecutionEvent(
+            type=EventType.EXECUTION_COMPLETE,
+            output=final_output,
+            timestamp=datetime.now(),
+            metadata={
+                "status": ExecutionStatus.COMPLETED,
+                "iterations": iteration,
+                "trace_id": context.trace_id,
+            },
+        )

@@ -14,6 +14,7 @@ Practical guides for using Mesh effectively.
 - **[Streaming](guides/streaming)** - Token-by-token streaming patterns
 - **[Loops](guides/loops)** - Creating controlled cycles with loop conditions
 - **[Visualization](guides/visualization)** - Generate Mermaid diagrams from graphs
+- **[Deep Research](guides/deep-research)** - Build multi-agent research pipelines with human-in-the-loop approval
 - **[State Management](guides/state-management)** - Managing persistent state
 - **[Variables](guides/variables)** - Template variable resolution
 - **[Conditional Branching](guides/conditional-branching)** - Building conditional workflows

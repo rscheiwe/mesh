@@ -25,6 +25,9 @@ class NodeResult:
         chat_history: Chat messages to add to history
         loop_to_node: Node ID to loop back to (for LoopNode)
         max_loops: Maximum number of loop iterations
+        approval_pending: If True, executor should pause for approval
+        approval_id: Unique identifier for the approval request
+        approval_data: Data to surface to the approver (e.g., plan to review)
         metadata: Additional metadata about execution
     """
 
@@ -33,6 +36,9 @@ class NodeResult:
     chat_history: Optional[List[Dict]] = None
     loop_to_node: Optional[str] = None
     max_loops: Optional[int] = None
+    approval_pending: bool = False
+    approval_id: Optional[str] = None
+    approval_data: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 

@@ -4,12 +4,17 @@ This node evaluates conditions and determines which branch(es) to execute.
 It's used for routing workflow based on data or state.
 """
 
-from typing import List, Dict, Callable, Any, Optional
+from typing import List, Dict, Callable, Any, Optional, Union
 from dataclasses import dataclass
+import inspect
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
 from mesh.core.events import ExecutionEvent, EventType, transform_event_for_transient_mode
+
+
+# Type alias for predicates that can take input only or input + context
+PredicateFunc = Union[Callable[[Any], bool], Callable[[Any, ExecutionContext], bool]]
 
 
 @dataclass
@@ -18,12 +23,33 @@ class Condition:
 
     Attributes:
         name: Condition name/identifier
-        predicate: Function that evaluates to True/False
+        predicate: Function that evaluates to True/False.
+            Can be either:
+            - Callable[[Any], bool] - takes only input
+            - Callable[[Any, ExecutionContext], bool] - takes input and context
         target_node: Node ID to route to if condition is True
+
+    Example (input only):
+        >>> Condition(
+        ...     name="is_valid",
+        ...     predicate=lambda input: input.get("valid", False),
+        ...     target_node="valid_handler"
+        ... )
+
+    Example (with context access):
+        >>> def has_incomplete_steps(input, context):
+        ...     plan = context.state.get("plan", {})
+        ...     return any(not s.get("completed") for s in plan.get("steps", []))
+        >>>
+        >>> Condition(
+        ...     name="has_more_steps",
+        ...     predicate=has_incomplete_steps,
+        ...     target_node="researcher"
+        ... )
     """
 
     name: str
-    predicate: Callable[[Any], bool]
+    predicate: PredicateFunc
     target_node: str
 
 
@@ -251,8 +277,23 @@ class ConditionNode(BaseNode):
         # Evaluate each condition
         for condition in self.conditions:
             try:
-                # Call predicate with input
-                is_fulfilled = condition.predicate(input)
+                # Check if predicate accepts context (2 parameters)
+                # by inspecting the function signature
+                predicate = condition.predicate
+                try:
+                    sig = inspect.signature(predicate)
+                    param_count = len(sig.parameters)
+                except (ValueError, TypeError):
+                    # Fallback for built-ins or other callables
+                    param_count = 1
+
+                # Call predicate with appropriate arguments
+                if param_count >= 2:
+                    # Predicate accepts input AND context
+                    is_fulfilled = predicate(input, context)
+                else:
+                    # Predicate accepts only input
+                    is_fulfilled = predicate(input)
 
                 if is_fulfilled:
                     fulfilled_conditions.append(condition)

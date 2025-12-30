@@ -132,6 +132,55 @@ class ExecutionContext:
                 return exec_data.get("output")
         return None
 
+    def append_to_state(self, key: str, value: Any) -> List[Any]:
+        """Append a value to a list in state, creating the list if needed.
+
+        This is useful for accumulating observations, messages, or other
+        items across multiple node executions without overwriting.
+
+        Args:
+            key: State key to append to
+            value: Value to append
+
+        Returns:
+            The updated list
+
+        Example:
+            >>> context.append_to_state("observations", "Found relevant document")
+            >>> context.append_to_state("observations", "Verified with source")
+            >>> context.state["observations"]
+            ['Found relevant document', 'Verified with source']
+        """
+        if key not in self.state:
+            self.state[key] = []
+        elif not isinstance(self.state[key], list):
+            # Convert existing value to list
+            self.state[key] = [self.state[key]]
+
+        self.state[key].append(value)
+        return self.state[key]
+
+    def get_from_state(self, key: str, default: Any = None) -> Any:
+        """Get a value from state with optional default.
+
+        Args:
+            key: State key to retrieve
+            default: Default value if key not found
+
+        Returns:
+            Value at key or default
+        """
+        return self.state.get(key, default)
+
+    def set_in_state(self, key: str, value: Any) -> None:
+        """Set a value in state.
+
+        Args:
+            key: State key to set
+            value: Value to set
+        """
+        self.state[key] = value
+
 
 class StateManager:
     """Manager for execution state and persistence.
