@@ -237,7 +237,7 @@ class RAGNode(BaseNode):
                 "formatted": formatted_context,
                 "documents": documents,
                 "query": query,
-                "num_results": len(documents),
+                "count": len(documents),
             },
             metadata={
                 "retriever_type": self.retriever_type,

@@ -12,6 +12,9 @@ from mesh.nodes.rag import RAGNode
 from mesh.nodes.data_handler import DataHandlerNode
 from mesh.nodes.approval import ApprovalNode, ApprovalResult, approve, reject
 from mesh.nodes.conversation import ConversationNode, continue_conversation
+from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
+from mesh.nodes.orchestrator import OrchestratorNode
+from mesh.nodes.sub_agent import SubAgentNode, SubAgentInfo
 
 __all__ = [
     "Node",
@@ -22,6 +25,8 @@ __all__ = [
     "AgentNode",
     "LLMNode",
     "ToolNode",
+    "DynamicToolSelectorNode",
+    "OrchestratorNode",
     "ConditionNode",
     "Condition",
     "SimpleCondition",
@@ -35,4 +40,6 @@ __all__ = [
     "reject",
     "ConversationNode",
     "continue_conversation",
+    "SubAgentNode",
+    "SubAgentInfo",
 ]

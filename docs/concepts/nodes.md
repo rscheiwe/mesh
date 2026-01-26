@@ -11,7 +11,7 @@ Nodes are the building blocks of Mesh workflows. Each node performs a specific t
 
 ## Node Types
 
-Mesh provides 9 core node types:
+Mesh provides 10 core node types:
 
 | Type | Purpose | Key Features |
 |------|---------|--------------|
@@ -24,6 +24,7 @@ Mesh provides 9 core node types:
 | **ConditionNode** | Branching logic | Multiple conditions |
 | **LoopNode** | Array iteration | JSONPath selection |
 | **ApprovalNode** | Human-in-the-loop | Pause/resume, approval workflows |
+| **OrchestratorNode** | Multi-agent delegation | LLM-driven routing to sub-agents |
 
 ## 1. StartNode
 
@@ -726,6 +727,69 @@ result = approve(
 - Any critical decision point needing human oversight
 
 See the [Deep Research Guide](../guides/deep-research) for a complete example.
+
+## 10. OrchestratorNode
+
+LLM-driven delegation to sub-agents at runtime. Instead of static graph edges, an orchestrator dynamically decides which sub-agents to call based on the task.
+
+**Visual Canvas Pattern:**
+
+In the React Flow canvas, connect AgentFlowNodes as children of the OrchestratorNode:
+
+```
+                        ┌─→ AgentFlowNode (Researcher)
+StartNode → Orchestrator ─┼─→ AgentFlowNode (Analyst)
+                        └─→ AgentFlowNode (Writer)
+```
+
+The orchestrator **discovers sub-agents from graph edges** - no dropdown selection needed!
+
+**Basic Usage:**
+
+```python
+from mesh.nodes import OrchestratorNode
+
+orchestrator = OrchestratorNode(
+    id="orchestrator_0",
+    provider="openai",
+    model_name="gpt-4o",
+    instruction="""You are a research team coordinator.
+    For gathering information → use researcher
+    For analyzing data → use analyst
+    For writing summaries → use writer""",
+    result_mode="synthesize",
+    max_iterations=5,
+)
+
+# Inject dependencies
+orchestrator.set_flow_loader(my_flow_loader)
+orchestrator.set_registry(my_registry)
+orchestrator.set_graph(execution_graph)  # For sub-agent discovery
+```
+
+**Parameters:**
+- `provider`: LLM provider (openai, anthropic, gemini)
+- `model_name`: Model for orchestration decisions
+- `instruction`: Instructions for the orchestrator LLM
+- `temperature`: Sampling temperature (default: 0.3)
+- `result_mode`: How to handle outputs (synthesize, stream_through, raw)
+- `max_iterations`: Maximum sub-agent calls (default: 5)
+- `show_sub_agent_events`: Stream events from sub-agents (default: True)
+
+**Key Features:**
+- Sub-agents discovered from graph edges (connected AgentFlowNodes)
+- Sub-agents are Mesh graphs (not Vel Agents directly)
+- LLM decides which sub-agents to call based on task
+- Sub-agent descriptions are critical for routing decisions
+- Events from sub-agents are prefixed with orchestrator node ID
+
+**When to Use:**
+- Dynamic task routing based on content
+- Building agent teams with specialized roles
+- Hierarchical delegation patterns
+- Complex workflows requiring runtime decisions
+
+See the [Orchestrator Guide](../guides/orchestrator) for a complete walkthrough.
 
 ## Node Configuration
 

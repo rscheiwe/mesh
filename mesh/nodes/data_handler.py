@@ -233,6 +233,79 @@ class DataHandlerNode(ToolNode):
         """
         self.db_session_getter = getter
 
+    async def _execute_impl(
+        self,
+        input: Any,
+        context: ExecutionContext,
+    ) -> NodeResult:
+        """Execute data handler query.
+
+        Override ToolNode._execute_impl to return rows/count at top level
+        instead of wrapping in {"output": ...}. This matches the UI's
+        AvailableVariables component which shows {{data_handler_0.rows}}.
+
+        Args:
+            input: Input data
+            context: Execution context
+
+        Returns:
+            NodeResult with rows, count, query, params at top level
+        """
+        from mesh.core.events import ExecutionEvent, EventType
+
+        # Emit start event
+        await self._emit_event_if_enabled(
+            context,
+            ExecutionEvent(
+                type=EventType.NODE_START,
+                node_id=self.id,
+                metadata={
+                    "tool_name": self.function_name,
+                    "node_type": "data_handler",
+                },
+            )
+        )
+
+        # Build kwargs from function signature
+        kwargs = self._build_kwargs(input, context)
+
+        # Execute the query function
+        try:
+            if self.is_async:
+                result = await self.tool_fn(**kwargs)
+            else:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, lambda: self.tool_fn(**kwargs))
+        except Exception as e:
+            # Emit error event
+            await self._emit_event_if_enabled(
+                context,
+                ExecutionEvent(
+                    type=EventType.NODE_ERROR,
+                    node_id=self.id,
+                    error=str(e),
+                    metadata={
+                        "tool_name": self.function_name,
+                        "node_type": "data_handler",
+                    },
+                )
+            )
+            raise RuntimeError(
+                f"DataHandlerNode '{self.id}' failed: {str(e)}"
+            ) from e
+
+        # Return result directly (not wrapped in {"output": ...})
+        # This allows {{data_handler_0.rows}} to work correctly
+        return NodeResult(
+            output=result,  # Direct result: {"rows": [...], "count": N, ...}
+            metadata={
+                "tool_name": self.function_name,
+                "node_type": "data_handler",
+                "db_source": self.db_source,
+            },
+        )
+
     def __repr__(self) -> str:
         return f"DataHandlerNode(id='{self.id}', db_source='{self.db_source}')"
 

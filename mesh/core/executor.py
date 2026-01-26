@@ -153,12 +153,51 @@ class Executor:
                 # Get node instance
                 node = self.graph.get_node(current.node_id)
 
-                # Emit node start event (skip for nodes that emit their own with metadata)
+                # Import node types for checks
                 from mesh.nodes.agent import AgentNode
                 from mesh.nodes.llm import LLMNode
                 from mesh.nodes.tool import ToolNode
                 from mesh.nodes.start import StartNode
+                from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
 
+                # Skip Tool nodes that only feed into DynamicToolSelector
+                # These nodes provide metadata only, not execution
+                if isinstance(node, ToolNode):
+                    # Check if ALL children are DynamicToolSelector nodes
+                    children = self.graph.children.get(current.node_id, [])
+                    all_children_are_selectors = (
+                        len(children) > 0 and
+                        all(
+                            isinstance(self.graph.get_node(child_id), DynamicToolSelectorNode)
+                            for child_id in children
+                        )
+                    )
+                    if all_children_are_selectors:
+                        # Skip execution - the DynamicToolSelector already has tool info from parsing
+                        # Queue children with empty output (they don't need it from tool execution)
+                        for child_id in children:
+                            child_deps = self.graph.dependencies.get(child_id, set())
+                            if len(child_deps) <= 1:
+                                queue.append(NodeQueueItem(node_id=child_id, inputs={}))
+                            else:
+                                # Multi-parent handling for DynamicToolSelector with multiple tool inputs
+                                if child_id not in waiting_nodes:
+                                    waiting_nodes[child_id] = WaitingNode(
+                                        node_id=child_id,
+                                        expected_inputs=child_deps.copy(),
+                                    )
+                                waiting_nodes[child_id].received_inputs[current.node_id] = {}
+                                if waiting_nodes[child_id].expected_inputs <= set(
+                                    waiting_nodes[child_id].received_inputs.keys()
+                                ):
+                                    queue.append(NodeQueueItem(
+                                        node_id=child_id,
+                                        inputs=waiting_nodes[child_id].received_inputs,
+                                    ))
+                                    del waiting_nodes[child_id]
+                        continue  # Skip normal execution for this tool node
+
+                # Emit node start event (skip for nodes that emit their own with metadata)
                 if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode)):
                     yield ExecutionEvent(
                         type=EventType.NODE_START,

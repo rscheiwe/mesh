@@ -19,6 +19,8 @@ from mesh.nodes.loop import LoopNode
 from mesh.nodes.rag import RAGNode
 from mesh.nodes.data_handler import DataHandlerNode
 from mesh.nodes.conversation import ConversationNode
+from mesh.nodes.orchestrator import OrchestratorNode
+from mesh.nodes.sub_agent import SubAgentNode
 from mesh.utils.registry import NodeRegistry
 from mesh.utils.errors import GraphValidationError
 
@@ -78,9 +80,11 @@ class ReactFlowParser:
         "startAgentflow": "start",
         "agentAgentflow": "agent",
         "agentFlowAgentflow": "agent_flow",  # Subflow execution node
+        "orchestratorAgentflow": "orchestrator",  # LLM-driven delegation to sub-agents
         "conversationAgentflow": "conversation",  # Multi-turn parameter extraction
         "llmAgentflow": "llm",
         "toolAgentflow": "tool",
+        "dynamicToolSelectorAgentflow": "dynamic_tool_selector",  # Meta-tool for runtime discovery
         "ragAgentflow": "rag",
         "dataHandlerAgentflow": "data_handler",
         "conditionAgentflow": "condition",
@@ -130,7 +134,11 @@ class ReactFlowParser:
         except ValidationError as e:
             raise GraphValidationError(f"Invalid React Flow JSON: {e}")
 
-        # First pass: expand any agent_flow nodes inline
+        # Pre-pass: identify orchestrator nodes and their children
+        # AgentFlow nodes that are children of orchestrators should NOT be expanded
+        orchestrator_child_ids = self._find_orchestrator_children(flow_data)
+
+        # First pass: expand agent_flow nodes inline (except orchestrator children)
         expanded_nodes = []
         expanded_edges = list(flow_data.edges)
 
@@ -139,40 +147,46 @@ class ReactFlowParser:
             mesh_type = self.NODE_TYPE_MAP.get(flowise_type, flowise_type)
 
             if mesh_type == "agent_flow":
-                # Expand this subflow inline
-                subflow_nodes, subflow_edges, entry_node_id, exit_node_id = \
-                    self._expand_agent_flow(node_data)
+                if node_data.id in orchestrator_child_ids:
+                    # Keep as SubAgentNode - don't expand
+                    # Mark it so _create_node knows to create SubAgentNode
+                    node_data.data["_is_sub_agent"] = True
+                    expanded_nodes.append(node_data)
+                else:
+                    # Expand this subflow inline (normal behavior)
+                    subflow_nodes, subflow_edges, entry_node_id, exit_node_id = \
+                        self._expand_agent_flow(node_data)
 
-                # Add expanded nodes
-                expanded_nodes.extend(subflow_nodes)
+                    # Add expanded nodes
+                    expanded_nodes.extend(subflow_nodes)
 
-                # Rewire edges: any edge pointing TO this node should point to entry
-                # Any edge pointing FROM this node should come from exit
-                new_edges = []
-                for edge in expanded_edges:
-                    if edge.target == node_data.id:
-                        # Redirect to subflow entry
-                        new_edges.append(ReactFlowEdge(
-                            source=edge.source,
-                            target=entry_node_id,
-                            source_handle=edge.source_handle,
-                            target_handle=edge.target_handle,
-                        ))
-                    elif edge.source == node_data.id:
-                        # Redirect from subflow exit
-                        new_edges.append(ReactFlowEdge(
-                            source=exit_node_id,
-                            target=edge.target,
-                            source_handle=edge.source_handle,
-                            target_handle=edge.target_handle,
-                        ))
-                    else:
-                        new_edges.append(edge)
+                    # Rewire edges: any edge pointing TO this node should point to entry
+                    # Any edge pointing FROM this node should come from exit
+                    new_edges = []
+                    for edge in expanded_edges:
+                        if edge.target == node_data.id:
+                            # Redirect to subflow entry
+                            new_edges.append(ReactFlowEdge(
+                                source=edge.source,
+                                target=entry_node_id,
+                                source_handle=edge.source_handle,
+                                target_handle=edge.target_handle,
+                            ))
+                        elif edge.source == node_data.id:
+                            # Redirect from subflow exit
+                            new_edges.append(ReactFlowEdge(
+                                source=exit_node_id,
+                                target=edge.target,
+                                source_handle=edge.source_handle,
+                                target_handle=edge.target_handle,
+                            ))
+                        else:
+                            new_edges.append(edge)
 
-                expanded_edges = new_edges
+                    expanded_edges = new_edges
 
-                # Add subflow internal edges
-                expanded_edges.extend(subflow_edges)
+                    # Add subflow internal edges
+                    expanded_edges.extend(subflow_edges)
             else:
                 expanded_nodes.append(node_data)
 
@@ -209,9 +223,62 @@ class ReactFlowParser:
 
         # Construct and validate graph
         graph = ExecutionGraph.from_nodes_and_edges(nodes, edges)
+
+        # Wire DynamicToolSelectorNodes with their connected tool nodes
+        # This must happen after graph construction so we have access to all nodes
+        from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
+        from mesh.nodes.tool import ToolNode
+
+        for node_id, node in graph.nodes.items():
+            if isinstance(node, DynamicToolSelectorNode):
+                # Find all tool nodes that have edges pointing TO this selector
+                connected_tools = []
+                for edge in edges:
+                    if edge.target == node_id:
+                        source_node = graph.nodes.get(edge.source)
+                        if isinstance(source_node, ToolNode):
+                            connected_tools.append(source_node)
+                # Wire the connected tools to the selector
+                node.set_connected_tools(connected_tools)
+
         graph.validate()
 
         return graph
+
+    def _find_orchestrator_children(self, flow_data: ReactFlowJSON) -> set:
+        """Find all agent_flow nodes that are direct children of orchestrator nodes.
+
+        These nodes should NOT be expanded inline - they become SubAgentNodes
+        that the orchestrator discovers and invokes dynamically.
+
+        Args:
+            flow_data: Parsed React Flow JSON
+
+        Returns:
+            Set of node IDs that are orchestrator children
+        """
+        # Build a quick lookup of node types
+        node_types = {}
+        for node in flow_data.nodes:
+            flowise_type = node.data.get("name") or node.type
+            mesh_type = self.NODE_TYPE_MAP.get(flowise_type, flowise_type)
+            node_types[node.id] = mesh_type
+
+        # Find all orchestrator node IDs
+        orchestrator_ids = {
+            node_id for node_id, node_type in node_types.items()
+            if node_type == "orchestrator"
+        }
+
+        # Find all agent_flow nodes that are direct children of orchestrators
+        orchestrator_children = set()
+        for edge in flow_data.edges:
+            if edge.source in orchestrator_ids:
+                target_type = node_types.get(edge.target)
+                if target_type == "agent_flow":
+                    orchestrator_children.add(edge.target)
+
+        return orchestrator_children
 
     def _expand_agent_flow(
         self,
@@ -364,7 +431,10 @@ class ReactFlowParser:
                 return self._create_conversation_node(node_id, config)
 
             elif node_type == "agent_flow":
-                # Agent flow nodes are expanded inline during parse, not created as nodes
+                # Check if this is a sub-agent (child of orchestrator)
+                if config.get("_is_sub_agent"):
+                    return self._create_sub_agent_node(node_id, config)
+                # Regular agent flow nodes are expanded inline during parse
                 # This should not be reached - agent_flow handling is in parse()
                 raise GraphValidationError(
                     f"Agent flow node '{node_id}' should be expanded during parsing. "
@@ -377,6 +447,9 @@ class ReactFlowParser:
             elif node_type == "tool":
                 return self._create_tool_node(node_id, config)
 
+            elif node_type == "dynamic_tool_selector":
+                return self._create_dynamic_tool_selector_node(node_id, config)
+
             elif node_type == "rag":
                 return self._create_rag_node(node_id, config)
 
@@ -388,6 +461,9 @@ class ReactFlowParser:
 
             elif node_type == "loop":
                 return self._create_loop_node(node_id, config)
+
+            elif node_type == "orchestrator":
+                return self._create_orchestrator_node(node_id, config)
 
             else:
                 raise GraphValidationError(f"Unknown node type: {node_type}")
@@ -845,6 +921,33 @@ class ReactFlowParser:
 
             raise GraphValidationError("No callable function found in code")
 
+    def _create_dynamic_tool_selector_node(self, node_id: str, config: Dict[str, Any]):
+        """Create DynamicToolSelectorNode from config.
+
+        This node generates a ToolSpec that agents can call to discover and inject
+        additional tools at runtime. The connected tool nodes are wired up in parse()
+        after all nodes are created.
+
+        Args:
+            node_id: Node identifier
+            config: Node configuration containing:
+                - description: Tool description shown to agents
+                - maxResults: Maximum tools to return per query
+                - eventMode: "full" or "silent"
+
+        Returns:
+            DynamicToolSelectorNode instance
+        """
+        from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
+
+        return DynamicToolSelectorNode(
+            id=node_id,
+            description=config.get("description", "Search for additional tools. Use when asked to perform a task you don't have a tool for."),
+            max_results=config.get("maxResults", 5),
+            event_mode=config.get("eventMode", "full"),
+            config=config,
+        )
+
     def _create_rag_node(self, node_id: str, config: Dict[str, Any]) -> RAGNode:
         """Create RAGNode from config.
 
@@ -1006,3 +1109,86 @@ class ReactFlowParser:
             return False
 
         return predicate
+
+    def _create_orchestrator_node(self, node_id: str, config: Dict[str, Any]) -> OrchestratorNode:
+        """Create OrchestratorNode from config.
+
+        OrchestratorNode enables LLM-driven delegation to sub-agent flows.
+        The orchestrator LLM decides which sub-agents to call at runtime.
+
+        Sub-agents are discovered from graph edges at runtime - connect
+        AgentFlowNodes as children of the orchestrator in the canvas.
+
+        Config fields:
+            - provider: LLM provider (openai, anthropic, gemini)
+            - modelName: Model name for orchestration
+            - instruction: Instructions for the orchestrator LLM
+            - temperature: Sampling temperature
+            - resultMode: How to handle outputs (synthesize, stream_through, raw)
+            - maxIterations: Maximum sub-agent calls
+            - showSubAgentEvents: Whether to stream sub-agent events
+            - eventMode: Event emission mode
+
+        Returns:
+            OrchestratorNode instance
+        """
+        # Get model configuration
+        provider = config.get("provider", "openai")
+        model_name = config.get("modelName", "gpt-4o")
+        temperature = config.get("temperature", 0.3)
+
+        # Get orchestrator instruction
+        instruction = config.get("instruction", "")
+
+        # Get behavior configuration
+        result_mode = config.get("resultMode", "synthesize")
+        max_iterations = config.get("maxIterations", 5)
+        show_sub_agent_events = config.get("showSubAgentEvents", True)
+        event_mode = config.get("eventMode", "full")
+
+        node = OrchestratorNode(
+            id=node_id,
+            provider=provider,
+            model_name=model_name,
+            instruction=instruction,
+            temperature=float(temperature) if temperature else 0.3,
+            result_mode=result_mode,
+            max_iterations=int(max_iterations) if max_iterations else 5,
+            show_sub_agent_events=show_sub_agent_events,
+            event_mode=event_mode,
+            config=config,
+        )
+
+        # Set flow_loader and registry - will be injected by backend
+        if self.flow_loader:
+            node.set_flow_loader(self.flow_loader)
+        node.set_registry(self.registry)
+
+        return node
+
+    def _create_sub_agent_node(self, node_id: str, config: Dict[str, Any]) -> SubAgentNode:
+        """Create SubAgentNode from config.
+
+        SubAgentNodes are agent flow references that are children of an orchestrator.
+        They are NOT expanded inline - instead, the orchestrator discovers them
+        via graph edges and creates callable tools from them at runtime.
+
+        Config fields:
+            - flowUuid: UUID of the agent flow to execute
+            - flowName: Display name for the sub-agent (becomes tool name)
+            - flowDescription: Description for orchestrator LLM tool selection
+
+        Returns:
+            SubAgentNode instance
+        """
+        flow_uuid = config.get("flowUuid", "")
+        name = config.get("flowName", "") or config.get("label", "")
+        description = config.get("flowDescription", "") or config.get("description", "")
+
+        return SubAgentNode(
+            id=node_id,
+            flow_uuid=flow_uuid,
+            name=name,
+            description=description,
+            config=config,
+        )

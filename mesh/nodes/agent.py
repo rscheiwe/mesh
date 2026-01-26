@@ -161,6 +161,11 @@ class AgentNode(BaseNode):
             )
             await context.emit_event(start_event)
 
+        # Check for DynamicToolSelector outputs in input and inject ToolSpecs
+        # This allows upstream DynamicToolSelector nodes to inject their meta-tool
+        # into this agent's available tools
+        self._inject_upstream_tool_specs(input)
+
         try:
             # Extract message from input
             message = self._extract_message(input)
@@ -1382,6 +1387,108 @@ class AgentNode(BaseNode):
         elif self.agent_type == "openai":
             if hasattr(self.agent, "instructions"):
                 self.agent.instructions = prompt
+
+    def _inject_upstream_tool_specs(self, input: Any) -> None:
+        """Inject ToolSpecs from upstream DynamicToolSelector nodes.
+
+        When a DynamicToolSelector node is connected upstream of this agent,
+        its output contains a tool_spec that should be added to the agent's
+        available tools. This also automatically augments the agent's system
+        prompt with <available_tools> and <tool_lookup> sections.
+
+        Args:
+            input: Input data (may contain tool_spec from upstream nodes)
+        """
+        if not isinstance(input, dict):
+            return
+
+        # Check each value in input for tool_spec
+        for key, value in input.items():
+            if isinstance(value, dict) and "tool_spec" in value:
+                tool_spec = value["tool_spec"]
+                connected_tools = value.get("connected_tools", [])
+
+                # Augment system prompt with tool_lookup instructions
+                self._augment_prompt_with_tool_lookup(tool_spec.name, connected_tools)
+
+                if self.agent_type == "vel":
+                    # Inject into Vel agent's tool set
+                    # Vel agents store tools in _instance_tools or tools list
+                    if hasattr(self.agent, '_instance_tools'):
+                        # Dict-based tool storage
+                        if isinstance(self.agent._instance_tools, dict):
+                            self.agent._instance_tools[tool_spec.name] = tool_spec
+                        elif isinstance(self.agent._instance_tools, list):
+                            # Check if already present
+                            existing_names = [t.name for t in self.agent._instance_tools if hasattr(t, 'name')]
+                            if tool_spec.name not in existing_names:
+                                self.agent._instance_tools.append(tool_spec)
+                    elif hasattr(self.agent, 'tools'):
+                        # List-based tool storage
+                        if isinstance(self.agent.tools, list):
+                            existing_names = [t.name for t in self.agent.tools if hasattr(t, 'name')]
+                            if tool_spec.name not in existing_names:
+                                self.agent.tools.append(tool_spec)
+                        elif isinstance(self.agent.tools, dict):
+                            self.agent.tools[tool_spec.name] = tool_spec
+
+                elif self.agent_type == "openai":
+                    # OpenAI Agents SDK uses different tool registration
+                    # For now, log a warning - full support requires SDK changes
+                    pass
+
+    def _augment_prompt_with_tool_lookup(self, selector_name: str, available_tools: list) -> None:
+        """Augment agent's system prompt with tool_lookup instructions.
+
+        When a DynamicToolSelector is connected upstream, this method automatically
+        adds <available_tools> and <tool_lookup> sections to the agent's system
+        prompt, instructing the agent how to discover and use additional tools.
+
+        Args:
+            selector_name: Name of the tool_lookup tool (e.g., "tool_selector_0")
+            available_tools: List of tool names that can be discovered
+        """
+        # Build the tool list for the prompt
+        tools_list = "\n".join(f"    - {tool}" for tool in available_tools)
+
+        # Build the tool_lookup prompt section
+        tool_lookup_prompt = f"""
+<available_tools_for_discovery>
+  The following tools are available through {selector_name}:
+{tools_list}
+</available_tools_for_discovery>
+
+<{selector_name}_usage>
+  IMPORTANT: Before saying "I can't do that" or "I don't have access to X", ALWAYS call {selector_name} first.
+
+  {selector_name} lets you discover additional capabilities that aren't in your initial toolkit.
+
+  When to use:
+  - User asks for ANY capability you don't currently have
+  - Search with a descriptive query: {selector_name}(query="description of what you need")
+
+  Examples:
+  - User asks to send an email → {selector_name}(query="email send")
+  - User asks to query a database → {selector_name}(query="database query")
+  - User asks for any tool from the list above → {selector_name}(query="relevant keywords")
+
+  NEVER say "I don't have the ability to..." without first checking {selector_name}.
+</{selector_name}_usage>
+"""
+
+        # Get current system prompt
+        current_prompt = self.system_prompt or ""
+
+        # Check if we've already augmented (avoid duplicate augmentation)
+        if f"<{selector_name}_usage>" in current_prompt:
+            return
+
+        # Append the tool_lookup section to the system prompt
+        augmented_prompt = current_prompt + tool_lookup_prompt
+
+        # Update the agent's system prompt
+        self._update_system_prompt(augmented_prompt)
+        self.system_prompt = augmented_prompt
 
     def __repr__(self) -> str:
         return f"AgentNode(id='{self.id}', type='{self.agent_type}')"
