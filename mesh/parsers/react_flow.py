@@ -5,7 +5,10 @@ Mesh ExecutionGraph structures.
 """
 
 import json
+import logging
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 from pydantic import BaseModel, ValidationError, Field
 
 from mesh.core.graph import ExecutionGraph, Edge, NodeConfig
@@ -750,13 +753,12 @@ class ReactFlowParser:
         tools_config: List[Dict[str, Any]],
         node_id: str
     ) -> List[Any]:
-        """Create ToolSpec instances from inline tool definitions.
+        """Create ToolSpec instances from tool definitions.
 
         Args:
-            tools_config: List of tool configurations, each with:
-                - code: Python function code (required)
-                - name: Optional tool name (auto-generated if not provided)
-                - description: Optional tool description (extracted from docstring if not provided)
+            tools_config: List of tool configurations. Supports:
+                - Code-based tools: have 'code' field with Python function
+                - DataHandler tools: have 'type' === 'DataHandler' with query config
             node_id: Parent node ID (for error messages)
 
         Returns:
@@ -774,6 +776,16 @@ class ReactFlowParser:
 
         tools = []
         for idx, tool_config in enumerate(tools_config):
+            tool_type = tool_config.get("type", "Tool")
+
+            # Handle DataHandler tools
+            if tool_type == "DataHandler":
+                tool_spec = self._create_data_handler_tool_spec(tool_config, node_id, idx)
+                if tool_spec:
+                    tools.append(tool_spec)
+                continue
+
+            # Handle code-based tools
             code = tool_config.get("code")
             if not code:
                 raise GraphValidationError(
@@ -821,6 +833,211 @@ class ReactFlowParser:
             tools.append(tool_spec)
 
         return tools
+
+    def _create_data_handler_tool_spec(
+        self,
+        tool_config: Dict[str, Any],
+        node_id: str,
+        idx: int
+    ) -> Any:
+        """Create a ToolSpec for a DataHandler tool.
+
+        DataHandler tools execute SQL queries against configured databases.
+        The tool function needs db_session_getter injected at runtime.
+
+        Args:
+            tool_config: DataHandler tool configuration from DB with:
+                - name: Tool name
+                - description: Tool description
+                - type: "DataHandler"
+                - args: List of field configs with name/default values:
+                    - db_source: Database source (postgres, vertica, mysql)
+                    - query: SQL query template
+                    - query_params: JSON schema of parameters for LLM
+                    - params: Default parameter values
+            node_id: Parent node ID
+            idx: Tool index
+
+        Returns:
+            ToolSpec instance or None if creation fails
+        """
+        try:
+            from vel.tools import ToolSpec
+        except ImportError:
+            return None
+
+        tool_name = tool_config.get("name", f"data_handler_{idx}")
+        description = tool_config.get("description", "Execute a database query")
+
+        # Parse args array to extract config values
+        args = tool_config.get("args", [])
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = []
+
+        # Extract values from args array (each item has name, default)
+        db_source = "postgres"
+        query = ""
+        query_params = []  # Schema of params LLM needs to provide
+        default_params = {}
+
+        for arg in args if isinstance(args, list) else []:
+            arg_name = arg.get("name")
+            arg_default = arg.get("default", "")
+
+            if arg_name == "db_source":
+                db_source = arg_default or "postgres"
+            elif arg_name == "query":
+                query = arg_default or ""
+            elif arg_name == "query_params":
+                # Parse the JSON schema of parameters
+                if isinstance(arg_default, str):
+                    try:
+                        query_params = json.loads(arg_default)
+                    except json.JSONDecodeError:
+                        query_params = []
+                else:
+                    query_params = arg_default or []
+            elif arg_name == "params":
+                # Parse default parameter values
+                if isinstance(arg_default, str):
+                    try:
+                        default_params = json.loads(arg_default)
+                    except json.JSONDecodeError:
+                        default_params = {}
+                else:
+                    default_params = arg_default or {}
+
+        # Build parameter info for the tool function
+        # query_params format: [{"name": "limit_num", "type": "integer", "description": "...", "required": true}]
+        param_info = []
+        for param in query_params if isinstance(query_params, list) else []:
+            param_info.append({
+                "name": param.get("name"),
+                "type": param.get("type", "string"),
+                "description": param.get("description", ""),
+                "required": param.get("required", False),
+            })
+
+        # Create wrapper function that executes the query
+        # Uses closure to capture config, db_session_getter injected via attribute
+        def create_data_handler_func(
+            query_template: str,
+            source: str,
+            params_info: list,
+            defaults: dict,
+            tool_description: str
+        ):
+            """Factory to create data handler function with closure over config."""
+
+            def data_handler_tool(**kwargs) -> str:
+                """Execute database query with provided parameters."""
+                import json as json_module
+                from uuid import UUID
+                from datetime import date, datetime
+                from decimal import Decimal
+
+                # Get db_session_getter - injected via __mesh_db_getter__
+                db_getter = getattr(data_handler_tool, '__mesh_db_getter__', None)
+                if not db_getter:
+                    return json_module.dumps({
+                        "error": "Database session getter not configured. "
+                                 "Backend must inject via set_db_session_getter()."
+                    })
+
+                try:
+                    session = db_getter(source)
+                    from sqlalchemy import text
+
+                    # Merge default params with provided kwargs
+                    resolved_params = dict(defaults)
+                    resolved_params.update(kwargs)
+
+                    result = session.execute(text(query_template), resolved_params)
+                    rows = result.fetchall()
+
+                    # Convert to list of dicts with JSON-serializable values
+                    if rows:
+                        columns = result.keys()
+                        serialized_rows = []
+                        for row in rows:
+                            row_dict = {}
+                            for col, val in zip(columns, row):
+                                if isinstance(val, UUID):
+                                    row_dict[col] = str(val)
+                                elif isinstance(val, (date, datetime)):
+                                    row_dict[col] = val.isoformat()
+                                elif isinstance(val, Decimal):
+                                    row_dict[col] = float(val)
+                                elif isinstance(val, bytes):
+                                    row_dict[col] = val.decode('utf-8', errors='replace')
+                                else:
+                                    row_dict[col] = val
+                            serialized_rows.append(row_dict)
+                        data = serialized_rows
+                    else:
+                        data = []
+
+                    return json_module.dumps({
+                        "rows": data,
+                        "count": len(data),
+                    })
+
+                except Exception as e:
+                    return json_module.dumps({"error": str(e)})
+                finally:
+                    if 'session' in locals():
+                        session.close()
+
+            # Store config on function for injection and debugging
+            data_handler_tool.__mesh_query__ = query_template
+            data_handler_tool.__mesh_db_source__ = source
+            data_handler_tool.__mesh_params_info__ = params_info
+            data_handler_tool.__mesh_default_params__ = defaults
+
+            # Build docstring with parameter info for Vel to introspect
+            param_docs = []
+            for p in params_info:
+                req = " (required)" if p.get("required") else ""
+                param_docs.append(f"    {p['name']} ({p['type']}): {p['description']}{req}")
+
+            data_handler_tool.__doc__ = f"""{tool_description}
+
+Args:
+{chr(10).join(param_docs) if param_docs else '    No parameters required'}
+
+Returns:
+    JSON with rows (list of dicts) and count
+"""
+            return data_handler_tool
+
+        # Create the function
+        func = create_data_handler_func(query, db_source, param_info, default_params, description)
+
+        # Inject db_session_getter now (it will be available at runtime)
+        # Import here to avoid circular imports
+        try:
+            from server.llm.graph.node_injector import get_db_session_for_source
+            func.__mesh_db_getter__ = get_db_session_for_source
+            logger.debug(f"Pre-injected DB session getter into DataHandler tool '{tool_name}'")
+        except ImportError:
+            # Running outside taboolabot-api context - db_getter must be injected later
+            logger.debug(f"Could not pre-inject DB getter for '{tool_name}' (not in taboolabot-api context)")
+
+        # Create ToolSpec
+        try:
+            tool_spec = ToolSpec.from_function(
+                func,
+                name=tool_name,
+                description=description,
+            )
+            logger.debug(f"Created DataHandler ToolSpec '{tool_name}' with query: {query[:50]}...")
+            return tool_spec
+        except Exception as e:
+            logger.warning(f"Failed to create DataHandler tool spec for '{tool_name}': {e}")
+            return None
 
     def _create_llm_node(self, node_id: str, config: Dict[str, Any]) -> LLMNode:
         """Create LLMNode from config."""

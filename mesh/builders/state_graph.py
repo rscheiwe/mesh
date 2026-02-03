@@ -43,6 +43,13 @@ class StateGraph:
         self._nodes: Dict[str, Node] = {}
         self._edges: List[Edge] = []
         self._entry_point: Optional[str] = None
+        # Interrupt configurations by node_id
+        self._interrupt_before: Dict[str, Dict[str, Any]] = {}
+        self._interrupt_after: Dict[str, Dict[str, Any]] = {}
+        # Parallel execution configurations
+        self._parallel_branches: List[Dict[str, Any]] = []  # ParallelBranch configs
+        self._fan_in_nodes: Dict[str, List[str]] = {}  # target -> sources it waits for
+        self._fan_in_aggregators: Dict[str, Callable] = {}  # target -> aggregator fn
 
     def add_node(
         self,
@@ -177,6 +184,19 @@ class StateGraph:
             )
         elif node_type == "end":
             node = EndNode(id=node_id, config=kwargs.get("config", {}))
+        elif node_type == "subgraph":
+            from mesh.nodes.subgraph import SubgraphNode
+            from mesh.subgraph import Subgraph
+            # node_or_config should be a Subgraph instance
+            if not isinstance(node_or_config, Subgraph):
+                raise GraphValidationError(
+                    f"subgraph node type requires a Subgraph instance, got: {type(node_or_config)}"
+                )
+            node = SubgraphNode(
+                id=node_id,
+                subgraph=node_or_config,
+                config=kwargs.get("config", {}),
+            )
         else:
             raise GraphValidationError(f"Unknown node type: {node_type}")
 
@@ -190,6 +210,9 @@ class StateGraph:
         is_loop_edge: bool = False,
         loop_condition: Optional[Any] = None,
         max_iterations: Optional[int] = None,
+        interrupt_before: bool = False,
+        interrupt_after: bool = False,
+        interrupt_condition: Optional[Callable[[Any, Any], bool]] = None,
     ) -> "StateGraph":
         """Add a direct edge between two nodes.
 
@@ -199,6 +222,9 @@ class StateGraph:
             is_loop_edge: Whether this edge is part of a cycle (allows controlled loops)
             loop_condition: Callable (state, output) -> bool to continue loop
             max_iterations: Maximum iterations for this loop edge
+            interrupt_before: Pause before executing target node for human review
+            interrupt_after: Pause after executing target node for human review
+            interrupt_condition: Callable (state, input/output) -> bool to trigger interrupt
 
         Returns:
             Self for method chaining
@@ -212,10 +238,12 @@ class StateGraph:
             ...     is_loop_edge=True,
             ...     loop_condition=lambda state, output: state.get("count", 0) < 10)
 
-            >>> # Loop edge with max iterations
-            >>> graph.add_edge("check", "process",
-            ...     is_loop_edge=True,
-            ...     max_iterations=100)
+            >>> # Interrupt before a critical node
+            >>> graph.add_edge("researcher", "reviewer", interrupt_before=True)
+
+            >>> # Conditional interrupt
+            >>> graph.add_edge("agent", "tool", interrupt_before=True,
+            ...     interrupt_condition=lambda state, input: state.get("requires_approval"))
         """
         self._edges.append(
             Edge(
@@ -224,6 +252,9 @@ class StateGraph:
                 is_loop_edge=is_loop_edge,
                 loop_condition=loop_condition,
                 max_iterations=max_iterations,
+                interrupt_before=interrupt_before,
+                interrupt_after=interrupt_after,
+                interrupt_condition=interrupt_condition,
             )
         )
         return self
@@ -323,8 +354,16 @@ class StateGraph:
         # Note: END nodes are optional - the executor will identify
         # nodes with no children as ending points automatically
 
-        # Build execution graph
-        graph = ExecutionGraph.from_nodes_and_edges(self._nodes, self._edges)
+        # Build execution graph with all configurations
+        graph = ExecutionGraph.from_nodes_and_edges(
+            self._nodes,
+            self._edges,
+            interrupt_before=self._interrupt_before,
+            interrupt_after=self._interrupt_after,
+            parallel_branches=self._parallel_branches,
+            fan_in_nodes=self._fan_in_nodes,
+            fan_in_aggregators=self._fan_in_aggregators,
+        )
 
         # Validate
         graph.validate()
@@ -346,6 +385,163 @@ class StateGraph:
         """
         for i in range(len(node_ids) - 1):
             self.add_edge(node_ids[i], node_ids[i + 1])
+        return self
+
+    def set_interrupt_before(
+        self,
+        node_id: str,
+        condition: Optional[Callable[[Any, Any], bool]] = None,
+        metadata_extractor: Optional[Callable[[Any, Any], Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
+    ) -> "StateGraph":
+        """Configure an interrupt point before a node executes.
+
+        This enables human-in-the-loop review before the node runs.
+        The executor will pause and emit an INTERRUPT event, allowing
+        the caller to review/modify state before resuming.
+
+        Args:
+            node_id: ID of node to interrupt before
+            condition: Optional callable (state, input) -> bool to trigger conditionally
+            metadata_extractor: Optional callable to extract review data
+            timeout: Optional timeout in seconds (None = wait forever)
+
+        Returns:
+            Self for method chaining
+
+        Example:
+            >>> # Always interrupt before critical_node
+            >>> graph.set_interrupt_before("critical_node")
+
+            >>> # Conditional interrupt
+            >>> graph.set_interrupt_before(
+            ...     "reviewer",
+            ...     condition=lambda state, inp: state.get("requires_approval", False)
+            ... )
+        """
+        self._interrupt_before[node_id] = {
+            "condition": condition,
+            "metadata_extractor": metadata_extractor,
+            "timeout": timeout,
+        }
+        return self
+
+    def set_interrupt_after(
+        self,
+        node_id: str,
+        condition: Optional[Callable[[Any, Any], bool]] = None,
+        metadata_extractor: Optional[Callable[[Any, Any], Dict[str, Any]]] = None,
+        timeout: Optional[float] = None,
+    ) -> "StateGraph":
+        """Configure an interrupt point after a node executes.
+
+        This enables human-in-the-loop review after the node runs.
+        The executor will pause and emit an INTERRUPT event, allowing
+        the caller to review/modify state before continuing.
+
+        Args:
+            node_id: ID of node to interrupt after
+            condition: Optional callable (state, output) -> bool to trigger conditionally
+            metadata_extractor: Optional callable to extract review data
+            timeout: Optional timeout in seconds (None = wait forever)
+
+        Returns:
+            Self for method chaining
+
+        Example:
+            >>> # Always interrupt after agent to review output
+            >>> graph.set_interrupt_after("agent")
+
+            >>> # Conditional interrupt on high-risk actions
+            >>> graph.set_interrupt_after(
+            ...     "action_node",
+            ...     condition=lambda state, out: out.get("risk_level") == "high"
+            ... )
+        """
+        self._interrupt_after[node_id] = {
+            "condition": condition,
+            "metadata_extractor": metadata_extractor,
+            "timeout": timeout,
+        }
+        return self
+
+    def add_parallel_edges(
+        self,
+        source: str,
+        targets: List[str],
+    ) -> "StateGraph":
+        """Add fan-out edges from source to multiple targets (executed in parallel).
+
+        This creates parallel branches where all targets execute concurrently
+        after the source completes. Use with add_fan_in_edge to collect results.
+
+        Args:
+            source: Source node ID
+            targets: List of target node IDs to execute concurrently
+
+        Returns:
+            Self for method chaining
+
+        Example:
+            >>> graph.add_parallel_edges("START", ["worker_1", "worker_2", "worker_3"])
+            >>> # Creates: START -> (worker_1 | worker_2 | worker_3) in parallel
+        """
+        if len(targets) < 2:
+            raise GraphValidationError("add_parallel_edges requires at least 2 targets")
+
+        # Record parallel branch configuration
+        self._parallel_branches.append({
+            "source": source,
+            "targets": list(targets),
+            "is_dynamic": False,
+        })
+
+        # Also add regular edges for graph structure/validation
+        for target in targets:
+            self.add_edge(source, target)
+
+        return self
+
+    def add_fan_in_edge(
+        self,
+        sources: List[str],
+        target: str,
+        aggregator: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    ) -> "StateGraph":
+        """Add fan-in edge where target waits for all sources to complete.
+
+        This creates a synchronization point where the target node only
+        executes after all source nodes have completed. Results are aggregated
+        and passed to the target.
+
+        Args:
+            sources: List of source node IDs that must complete
+            target: Target node ID that receives aggregated results
+            aggregator: Optional function to aggregate results (default: merge dicts)
+
+        Returns:
+            Self for method chaining
+
+        Example:
+            >>> graph.add_fan_in_edge(
+            ...     ["worker_1", "worker_2", "worker_3"],
+            ...     "consolidator",
+            ...     aggregator=lambda results: {"all_findings": results}
+            ... )
+        """
+        if len(sources) < 2:
+            raise GraphValidationError("add_fan_in_edge requires at least 2 sources")
+
+        # Record fan-in configuration
+        self._fan_in_nodes[target] = list(sources)
+
+        if aggregator:
+            self._fan_in_aggregators[target] = aggregator
+
+        # Add edges for graph structure
+        for source in sources:
+            self.add_edge(source, target)
+
         return self
 
     def mermaid_code(

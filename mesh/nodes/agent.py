@@ -401,21 +401,20 @@ class AgentNode(BaseNode):
 
                     elif event_type == "tool-input-delta":
                         # Tool argument chunk streaming (AI SDK format)
-                        delta = event.get("inputTextDelta", "")
-                        if delta:
-                            await self._emit_event_if_enabled(context,
-                                ExecutionEvent(
-                                    type=EventType.TOOL_INPUT_DELTA,
-                                    node_id=self.id,
-                                    delta=delta,  # AI SDK field
-                                    metadata={
-                                        "tool_call_id": event.get("toolCallId"),
-                                        "node_type": "agent",
-                                        "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
-                                    },
-                                    raw_event=event,
-                                )
+                        # Don't set delta - raw_event already has inputTextDelta which is the correct field
+                        await self._emit_event_if_enabled(context,
+                            ExecutionEvent(
+                                type=EventType.TOOL_INPUT_DELTA,
+                                node_id=self.id,
+                                # delta intentionally not set - AI SDK uses inputTextDelta from raw_event
+                                metadata={
+                                    "tool_call_id": event.get("toolCallId"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
                             )
+                        )
 
                     elif event_type == "tool-input-available":
                         # Tool arguments complete and ready (AI SDK format)
@@ -594,21 +593,23 @@ class AgentNode(BaseNode):
 
                     elif event_type == "response-metadata":
                         # Usage statistics, model info, timing (AI SDK format)
-                        await self._emit_event_if_enabled(context,
-                            ExecutionEvent(
-                                type=EventType.RESPONSE_METADATA,
-                                node_id=self.id,
-                                metadata={
-                                    "id": event.get("id"),
-                                    "model_id": event.get("modelId"),
-                                    "usage": event.get("usage"),
-                                    "timestamp": event.get("timestamp"),
-                                    "node_type": "agent",
-                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
-                                },
-                                raw_event=event,
-                            )
-                        )
+                        # TODO: Filtered out - not compatible with AI SDK useChat hook
+                        # await self._emit_event_if_enabled(context,
+                        #     ExecutionEvent(
+                        #         type=EventType.RESPONSE_METADATA,
+                        #         node_id=self.id,
+                        #         metadata={
+                        #             "id": event.get("id"),
+                        #             "model_id": event.get("modelId"),
+                        #             "usage": event.get("usage"),
+                        #             "timestamp": event.get("timestamp"),
+                        #             "node_type": "agent",
+                        #             "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        #         },
+                        #         raw_event=event,
+                        #     )
+                        # )
+                        pass
 
                     elif event_type == "source":
                         # Citations and grounding (Gemini, AI SDK format)
@@ -1156,21 +1157,20 @@ class AgentNode(BaseNode):
 
             elif event_type == "tool-input-delta":
                 # Tool argument chunk streaming (AI SDK format)
-                delta = event_dict.get("inputTextDelta", "")
-                if delta:
-                    await self._emit_event_if_enabled(context,
-                        ExecutionEvent(
-                            type=EventType.TOOL_INPUT_DELTA,
-                            node_id=self.id,
-                            delta=delta,  # AI SDK field
-                            metadata={
-                                "tool_call_id": event_dict.get("toolCallId"),
-                                "node_type": "agent",
-                                "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
-                            },
-                            raw_event=event_dict,
-                        )
+                # Don't set delta - raw_event already has inputTextDelta which is the correct field
+                await self._emit_event_if_enabled(context,
+                    ExecutionEvent(
+                        type=EventType.TOOL_INPUT_DELTA,
+                        node_id=self.id,
+                        # delta intentionally not set - AI SDK uses inputTextDelta from raw_event
+                        metadata={
+                            "tool_call_id": event_dict.get("toolCallId"),
+                            "node_type": "agent",
+                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                        },
+                        raw_event=event_dict,
                     )
+                )
 
             elif event_type == "tool-input-available":
                 # Tool arguments complete and ready (AI SDK format)
@@ -1272,21 +1272,23 @@ class AgentNode(BaseNode):
 
             elif event_type == "response-metadata":
                 # Usage statistics, model info, timing (AI SDK format)
-                await self._emit_event_if_enabled(context,
-                    ExecutionEvent(
-                        type=EventType.RESPONSE_METADATA,
-                        node_id=self.id,
-                        metadata={
-                            "id": event_dict.get("id"),
-                            "model_id": event_dict.get("modelId"),
-                            "usage": event_dict.get("usage"),
-                            "timestamp": event_dict.get("timestamp"),
-                            "node_type": "agent",
-                            "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
-                        },
-                        raw_event=event_dict,
-                    )
-                )
+                # TODO: Filtered out - not compatible with AI SDK useChat hook
+                # await self._emit_event_if_enabled(context,
+                #     ExecutionEvent(
+                #         type=EventType.RESPONSE_METADATA,
+                #         node_id=self.id,
+                #         metadata={
+                #             "id": event_dict.get("id"),
+                #             "model_id": event_dict.get("modelId"),
+                #             "usage": event_dict.get("usage"),
+                #             "timestamp": event_dict.get("timestamp"),
+                #             "node_type": "agent",
+                #             "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                #         },
+                #         raw_event=event_dict,
+                #     )
+                # )
+                pass
 
             elif event_type == "source":
                 # Citations and grounding (Gemini, AI SDK format)

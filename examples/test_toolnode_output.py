@@ -76,14 +76,12 @@ async def main():
         except Exception as e:
             results["string_tool.output"] = f"ERROR: {e}"
 
-        # Test dict tool
+        # Test dict tool - dict outputs are returned directly (not wrapped)
         try:
-            dict_output = await resolver.resolve("{{dict_tool.output}}")
-            dict_message = await resolver.resolve("{{dict_tool.output.message}}")
-            dict_count = await resolver.resolve("{{dict_tool.output.count}}")
-            results["dict_tool.output"] = dict_output
-            results["dict_tool.output.message"] = dict_message
-            results["dict_tool.output.count"] = dict_count
+            dict_message = await resolver.resolve("{{dict_tool.message}}")
+            dict_count = await resolver.resolve("{{dict_tool.count}}")
+            results["dict_tool.message"] = dict_message
+            results["dict_tool.count"] = dict_count
         except Exception as e:
             results["dict_tool"] = f"ERROR: {e}"
 
@@ -143,8 +141,9 @@ async def main():
     print("=" * 80)
 
     checker_output = context.get_node_output("checker")
-    if checker_output and "output" in checker_output:
-        for key, value in checker_output["output"].items():
+    if checker_output:
+        # checker returns a dict, so it's stored directly (not wrapped)
+        for key, value in checker_output.items():
             status = "✅" if "ERROR" not in str(value) else "❌"
             print(f"{status} {{{{{key}}}}} = {value}")
     else:

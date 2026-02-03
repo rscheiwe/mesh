@@ -3,6 +3,17 @@
 This node wraps arbitrary Python functions (sync or async) and executes them
 as part of the graph workflow. It supports automatic parameter injection from
 context and input data.
+
+Output Behavior:
+- If tool returns a dict: stored directly, access via {{node_id.field}}
+- If tool returns a primitive: wrapped as {"output": value}, access via {{node_id.output}}
+
+Examples:
+    # Tool returns dict {"result": 3, "status": "ok"}
+    # Access: {{my_tool.result}}, {{my_tool.status}}
+
+    # Tool returns primitive "hello"
+    # Access: {{my_tool.output}}
 """
 
 from typing import Callable, Any, Dict, Optional
@@ -165,10 +176,17 @@ class ToolNode(BaseNode):
                 f"Tool function '{self.function_name}' failed: {str(e)}"
             ) from e
 
-        # Return result wrapped in output key for consistent access pattern
-        # Users can access via {{tool_id.output}} or {{tool_id.output.field}}
+        # Return result directly for intuitive variable access
+        # Users can access via {{tool_id.field}} (e.g., {{tool_id.result}})
+        # If result is a dict, its keys are directly accessible
+        # If result is a primitive, wrap it for consistent access as {{tool_id.output}}
+        if isinstance(result, dict):
+            output = result
+        else:
+            output = {"output": result}
+
         return NodeResult(
-            output={"output": result},
+            output=output,
             metadata={
                 "tool_name": self.function_name,
                 "tool_doc": self.function_doc,

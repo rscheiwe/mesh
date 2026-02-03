@@ -75,6 +75,28 @@ class EventType(str, Enum):
     # Custom data events (AI SDK V5 data-* pattern)
     CUSTOM_DATA = "data-custom"
 
+    # Checkpoint events (Mesh-specific, prefixed with data- for AI SDK)
+    CHECKPOINT_CREATED = "data-checkpoint-created"
+    CHECKPOINT_RESTORED = "data-checkpoint-restored"
+    CHECKPOINT_BRANCHED = "data-checkpoint-branched"
+    REPLAY_START = "data-replay-start"
+    REPLAY_COMPLETE = "data-replay-complete"
+
+    # Interrupt events (Mesh-specific, prefixed with data- for AI SDK)
+    INTERRUPT = "data-interrupt"
+    INTERRUPT_RESUMED = "data-interrupt-resumed"
+    INTERRUPT_REJECTED = "data-interrupt-rejected"
+
+    # Parallel execution events (Mesh-specific, prefixed with data- for AI SDK)
+    PARALLEL_START = "data-parallel-start"
+    PARALLEL_BRANCH_START = "data-parallel-branch-start"
+    PARALLEL_BRANCH_COMPLETE = "data-parallel-branch-complete"
+    PARALLEL_COMPLETE = "data-parallel-complete"
+
+    # Subgraph events (Mesh-specific, prefixed with data- for AI SDK)
+    SUBGRAPH_START = "data-subgraph-start"
+    SUBGRAPH_COMPLETE = "data-subgraph-complete"
+
     # Legacy aliases for backwards compatibility (deprecated)
     TOKEN = "text-delta"  # Alias for TEXT_DELTA
     MESSAGE_START = "text-start"  # Alias for TEXT_START

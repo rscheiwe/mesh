@@ -56,6 +56,57 @@ from mesh.parsers.react_flow import ReactFlowParser
 from mesh.streaming.iterator import StreamIterator
 from mesh.streaming.sse import SSEAdapter
 
+# Checkpointing
+from mesh.checkpoints import (
+    Checkpoint,
+    CheckpointConfig,
+    CheckpointNotFoundError,
+    CheckpointIntegrityError,
+)
+
+# Interrupts (human-in-the-loop)
+from mesh.interrupts import (
+    InterruptConfig,
+    InterruptState,
+    InterruptResume,
+    InterruptReject,
+    InterruptError,
+    InterruptNotFoundError,
+    InterruptTimeoutError,
+)
+
+# Parallel execution (fan-out/fan-in)
+from mesh.parallel import (
+    Send,
+    ParallelBranch,
+    ParallelConfig,
+    ParallelExecutor,
+    ParallelResult,
+    ParallelErrorStrategy,
+    ParallelExecutionError,
+    default_aggregator,
+    list_aggregator,
+    keyed_aggregator,
+)
+
+# Subgraph composition (nested graphs)
+from mesh.subgraph import (
+    Subgraph,
+    SubgraphConfig,
+    SubgraphBuilder,
+)
+from mesh.nodes.subgraph import SubgraphNode
+
+# Streaming modes
+from mesh.streaming.modes import (
+    StreamMode,
+    StreamModeAdapter,
+    StateValue,
+    StateUpdate,
+    StreamMessage,
+    DebugInfo,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -81,4 +132,40 @@ __all__ = [
     # Streaming
     "StreamIterator",
     "SSEAdapter",
+    # Checkpointing
+    "Checkpoint",
+    "CheckpointConfig",
+    "CheckpointNotFoundError",
+    "CheckpointIntegrityError",
+    # Interrupts
+    "InterruptConfig",
+    "InterruptState",
+    "InterruptResume",
+    "InterruptReject",
+    "InterruptError",
+    "InterruptNotFoundError",
+    "InterruptTimeoutError",
+    # Parallel execution
+    "Send",
+    "ParallelBranch",
+    "ParallelConfig",
+    "ParallelExecutor",
+    "ParallelResult",
+    "ParallelErrorStrategy",
+    "ParallelExecutionError",
+    "default_aggregator",
+    "list_aggregator",
+    "keyed_aggregator",
+    # Subgraph composition
+    "Subgraph",
+    "SubgraphConfig",
+    "SubgraphBuilder",
+    "SubgraphNode",
+    # Streaming modes
+    "StreamMode",
+    "StreamModeAdapter",
+    "StateValue",
+    "StateUpdate",
+    "StreamMessage",
+    "DebugInfo",
 ]

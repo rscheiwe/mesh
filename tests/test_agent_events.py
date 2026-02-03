@@ -84,9 +84,9 @@ async def test_reasoning_events(execution_context):
 
     reasoning_tokens = [e for e in events if e.type == EventType.REASONING_TOKEN]
     assert len(reasoning_tokens) == 2
-    assert reasoning_tokens[0].content == "Let me think about this..."
-    assert reasoning_tokens[1].content == " The answer is"
-    assert reasoning_tokens[0].metadata["event_subtype"] == "reasoning"
+    assert reasoning_tokens[0].delta == "Let me think about this..."
+    assert reasoning_tokens[1].delta == " The answer is"
+    assert reasoning_tokens[0].metadata["block_id"] == "r1"
 
     reasoning_ends = [e for e in events if e.type == EventType.REASONING_END]
     assert len(reasoning_ends) == 1

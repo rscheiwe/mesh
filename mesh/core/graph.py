@@ -18,6 +18,7 @@ class Edge(BaseModel):
     """Represents a directed connection between two nodes in the graph.
 
     Supports controlled cycles via loop conditions and max iterations.
+    Supports interrupt_before and interrupt_after for human-in-the-loop.
     """
 
     source: str
@@ -30,8 +31,13 @@ class Edge(BaseModel):
     loop_condition: Optional[Any] = None  # Callable: (state, output) -> bool to continue
     max_iterations: Optional[int] = None  # Max times this edge can be followed
 
+    # Interrupt control for human-in-the-loop
+    interrupt_before: bool = False  # Pause before executing target node
+    interrupt_after: bool = False  # Pause after executing target node
+    interrupt_condition: Optional[Any] = None  # Callable: (state, input/output) -> bool
+
     class Config:
-        arbitrary_types_allowed = True  # Allow callables in loop_condition
+        arbitrary_types_allowed = True  # Allow callables
 
     def __hash__(self):
         return hash((self.source, self.target, self.source_handle, self.target_handle))
@@ -96,6 +102,11 @@ class ExecutionGraph:
         starting_nodes: List of node IDs with no dependencies (entry points)
         ending_nodes: List of node IDs with no children (exit points)
         metadata: Computed metadata about graph structure for FE hints
+        interrupt_before: Node-level interrupt configs for pausing before execution
+        interrupt_after: Node-level interrupt configs for pausing after execution
+        parallel_branches: List of parallel branch configurations (fan-out)
+        fan_in_nodes: Mapping of target node to list of sources it waits for
+        fan_in_aggregators: Mapping of target node to aggregator function
     """
 
     nodes: Dict[str, "Node"]
@@ -105,16 +116,33 @@ class ExecutionGraph:
     starting_nodes: List[str]
     ending_nodes: List[str]
     metadata: Optional[GraphMetadata] = None
+    interrupt_before: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    interrupt_after: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    parallel_branches: List[Dict[str, Any]] = field(default_factory=list)
+    fan_in_nodes: Dict[str, List[str]] = field(default_factory=dict)
+    fan_in_aggregators: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_nodes_and_edges(
-        cls, nodes: Dict[str, "Node"], edges: List[Edge]
+        cls,
+        nodes: Dict[str, "Node"],
+        edges: List[Edge],
+        interrupt_before: Optional[Dict[str, Dict[str, Any]]] = None,
+        interrupt_after: Optional[Dict[str, Dict[str, Any]]] = None,
+        parallel_branches: Optional[List[Dict[str, Any]]] = None,
+        fan_in_nodes: Optional[Dict[str, List[str]]] = None,
+        fan_in_aggregators: Optional[Dict[str, Any]] = None,
     ) -> "ExecutionGraph":
         """Factory method to construct ExecutionGraph from nodes and edges.
 
         Args:
             nodes: Dictionary mapping node IDs to Node instances
             edges: List of Edge objects connecting nodes
+            interrupt_before: Optional dict of node_id -> interrupt config for before execution
+            interrupt_after: Optional dict of node_id -> interrupt config for after execution
+            parallel_branches: Optional list of parallel branch configurations
+            fan_in_nodes: Optional dict of target node -> list of sources to wait for
+            fan_in_aggregators: Optional dict of target node -> aggregator function
 
         Returns:
             ExecutionGraph: Compiled graph with computed dependencies
@@ -160,6 +188,11 @@ class ExecutionGraph:
             starting_nodes=starting_nodes,
             ending_nodes=ending_nodes,
             metadata=metadata,
+            interrupt_before=interrupt_before or {},
+            interrupt_after=interrupt_after or {},
+            parallel_branches=parallel_branches or [],
+            fan_in_nodes=fan_in_nodes or {},
+            fan_in_aggregators=fan_in_aggregators or {},
         )
 
     @staticmethod

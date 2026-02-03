@@ -14,7 +14,8 @@ from mesh.backends.memory import MemoryBackend
 async def mock_data_handler(input, context):
     """Simulates DataHandler returning database rows.
 
-    Note: ToolNode will wrap this in {"output": ...} automatically.
+    Note: ToolNode returns dict outputs directly (not wrapped).
+    Access via {{node_id.field}} e.g., {{data_handler_0.count}}
     """
     return {
         "rows": [
@@ -60,28 +61,22 @@ async def main():
         print(f"   Result: {direct_lookup}")
 
         # Try to resolve the variable
+        # With the fix, dict outputs are returned directly (not wrapped in {"output": ...})
         try:
-            # Try WITH .output (what user tried)
-            count_with_output = await resolver.resolve("{{data_handler_0.output.count}}")
-            full_with_output = await resolver.resolve("{{data_handler_0.output}}")
-
-            # Try WITHOUT .output (direct access)
+            # Direct access (recommended - matches AvailableVariables UI)
             count_direct = await resolver.resolve("{{data_handler_0.count}}")
+            rows_direct = await resolver.resolve("{{data_handler_0.rows}}")
             full_direct = await resolver.resolve("{{data_handler_0}}")
 
-            print(f"\n🔍 Variable Resolution Test:")
-            print(f"   WITH .output:")
-            print(f"     {{{{data_handler_0.output.count}}}} = '{count_with_output}'")
-            print(f"     {{{{data_handler_0.output}}}} = '{full_with_output}'")
-            print(f"   WITHOUT .output (direct):")
+            print(f"\n🔍 Variable Resolution Test (direct access - recommended):")
             print(f"     {{{{data_handler_0.count}}}} = '{count_direct}'")
+            print(f"     {{{{data_handler_0.rows}}}} = '{rows_direct}'")
             print(f"     {{{{data_handler_0}}}} = '{full_direct}'")
 
             return {
-                "resolved_count_with_output": count_with_output,
-                "resolved_full_with_output": full_with_output,
-                "resolved_count_direct": count_direct,
-                "resolved_full_direct": full_direct,
+                "resolved_count": count_direct,
+                "resolved_rows": rows_direct,
+                "resolved_full": full_direct,
                 "success": True,
             }
         except Exception as e:
