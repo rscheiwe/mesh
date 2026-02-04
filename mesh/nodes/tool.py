@@ -219,12 +219,12 @@ class ToolNode(BaseNode):
                 kwargs["variables"] = context.variables
             elif param_name == "chat_history":
                 kwargs["chat_history"] = context.chat_history
-            # Custom bindings
-            elif param_name in bindings:
-                kwargs[param_name] = bindings[param_name]
-            # Try to extract from input if it's a dict
+            # Try to extract from input if it's a dict (input values take priority)
             elif isinstance(input, dict) and param_name in input:
                 kwargs[param_name] = input[param_name]
+            # Custom bindings (skip None values - they're placeholders for user input)
+            elif param_name in bindings and bindings[param_name] is not None:
+                kwargs[param_name] = bindings[param_name]
             # Use default if available
             elif param.default != inspect.Parameter.empty:
                 kwargs[param_name] = param.default

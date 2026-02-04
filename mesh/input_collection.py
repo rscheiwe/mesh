@@ -84,8 +84,8 @@ def inspect_tool_required_params(
         if param_name in AUTO_INJECTED:
             continue
 
-        # Skip already-bound params
-        if param_name in bindings:
+        # Skip already-bound params (but not if bound to None - that's a placeholder)
+        if param_name in bindings and bindings[param_name] is not None:
             continue
 
         # Skip *args and **kwargs
@@ -240,6 +240,9 @@ def analyze_graph_input_requirements(
     Returns:
         List of ToolInputRequirement objects for nodes needing input
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     from mesh.nodes.tool import ToolNode
     from mesh.nodes.data_handler import DataHandlerNode
     from mesh.nodes.llm import LLMNode
@@ -253,11 +256,14 @@ def analyze_graph_input_requirements(
         if isinstance(node, (LLMNode, AgentNode)):
             llm_agent_nodes.add(node_id)
 
+    logger.info(f"[InputCollection] Found {len(llm_agent_nodes)} LLM/Agent nodes: {llm_agent_nodes}")
+
     if not llm_agent_nodes:
         return requirements
 
     # Find all nodes that are upstream of LLM/Agent nodes
     upstream_of_llm = _find_upstream_nodes(graph, llm_agent_nodes)
+    logger.info(f"[InputCollection] Found {len(upstream_of_llm)} upstream nodes: {upstream_of_llm}")
 
     # Check each Tool/DataHandler node
     for node_id, node in graph.nodes.items():
@@ -280,34 +286,53 @@ def analyze_graph_input_requirements(
 
         # Handle regular ToolNode
         if isinstance(node, ToolNode):
+            logger.info(f"[InputCollection] Checking ToolNode '{node_id}'")
             tool_fn = node.tool_fn
 
             # Allow override via callback (for dynamically loaded tools)
             if get_tool_fn:
                 override_fn = get_tool_fn(node_id)
                 if override_fn:
+                    logger.debug(f"[InputCollection] Using override tool_fn for '{node_id}'")
                     tool_fn = override_fn
 
             if not tool_fn:
+                logger.warning(f"[InputCollection] ToolNode '{node_id}' has no tool_fn - SKIPPING. "
+                              f"Config keys: {list(node.config.keys()) if node.config else 'None'}")
                 continue
+
+            logger.info(f"[InputCollection] ToolNode '{node_id}' has tool_fn: {getattr(tool_fn, '__name__', str(tool_fn))}")
 
             # Get bindings from node config
             bindings = node.config.get("bindings", {})
 
             # Inspect for required params
             required_params = inspect_tool_required_params(tool_fn, bindings)
+            logger.info(f"[InputCollection] ToolNode '{node_id}' required params: "
+                       f"{[(p.name, f'default={p.default}' if p.has_default else 'no default') for p in required_params]}")
 
-            # Only include if there are params WITHOUT defaults that need input
-            params_needing_input = [p for p in required_params if not p.has_default]
+            # A param needs input if:
+            # 1. It has no default, OR
+            # 2. Its default is None (None is often a sentinel meaning "should be provided")
+            params_needing_input = [
+                p for p in required_params
+                if not p.has_default or p.default is None
+            ]
+            logger.info(f"[InputCollection] ToolNode '{node_id}' params needing input: {[p.name for p in params_needing_input]}")
 
             if params_needing_input:
+                logger.info(f"[InputCollection] ✓ Adding interrupt for ToolNode '{node_id}'")
                 requirements.append(ToolInputRequirement(
                     node_id=node_id,
                     tool_name=getattr(node, 'function_name', node_id),
                     tool_description=getattr(node, 'function_doc', None),
                     required_params=params_needing_input,
                 ))
+            else:
+                logger.info(f"[InputCollection] ToolNode '{node_id}' has no params needing input - skipping")
 
+    logger.info(f"[InputCollection] Analysis complete. {len(requirements)} tool(s) will get interrupts: "
+                f"{[r.node_id for r in requirements]}")
     return requirements
 
 
@@ -485,6 +510,12 @@ def enable_input_collection_on_graph(
         ...         # Handle input collection
         ...         pass
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"[InputCollection] enable_input_collection_on_graph called")
+    logger.debug(f"[InputCollection] Graph nodes: {list(graph.nodes.keys())}")
+
     # Analyze the graph
     requirements = analyze_graph_input_requirements(graph, get_tool_fn)
 
