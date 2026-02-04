@@ -116,6 +116,7 @@ from mesh.input_collection import (
     analyze_graph_input_requirements,
     inject_input_collection_interrupts,
     setup_input_collection,
+    enable_input_collection_on_graph,
 )
 
 __all__ = [
@@ -187,4 +188,5 @@ __all__ = [
     "analyze_graph_input_requirements",
     "inject_input_collection_interrupts",
     "setup_input_collection",
+    "enable_input_collection_on_graph",
 ]

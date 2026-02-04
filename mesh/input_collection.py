@@ -449,3 +449,76 @@ def setup_input_collection(
         inject_input_collection_interrupts(graph_builder, requirements)
 
     return requirements
+
+
+def enable_input_collection_on_graph(
+    graph: "ExecutionGraph",
+    get_tool_fn: Optional[Callable[[str], Optional[Callable]]] = None,
+) -> List[ToolInputRequirement]:
+    """Enable input collection on an already-compiled ExecutionGraph.
+
+    This is useful when working with ReactFlowParser which returns
+    a compiled ExecutionGraph directly (not a StateGraph builder).
+
+    Modifies the graph's interrupt_before configuration in place.
+
+    Args:
+        graph: The compiled ExecutionGraph to modify
+        get_tool_fn: Optional callback to get tool functions by node_id
+
+    Returns:
+        List of requirements that were detected and will trigger interrupts
+
+    Example:
+        >>> from mesh import ReactFlowParser
+        >>> parser = ReactFlowParser(registry)
+        >>> graph = parser.parse(flow_json)
+        >>>
+        >>> # Enable input collection on the compiled graph
+        >>> requirements = enable_input_collection_on_graph(graph)
+        >>> print(f"Will collect input for: {[r.tool_name for r in requirements]}")
+        >>>
+        >>> # Now execute
+        >>> executor = Executor(graph, backend)
+        >>> async for event in executor.execute(input, context):
+        ...     if event.metadata.get("interrupt_type") == "input_collection":
+        ...         # Handle input collection
+        ...         pass
+    """
+    # Analyze the graph
+    requirements = analyze_graph_input_requirements(graph, get_tool_fn)
+
+    if not requirements:
+        return requirements
+
+    # Inject interrupt_before directly on the ExecutionGraph
+    for req in requirements:
+        # Create metadata extractor closure
+        def make_metadata_extractor(requirement: ToolInputRequirement):
+            def extractor(state: Dict[str, Any], input_data: Any) -> Dict[str, Any]:
+                return {
+                    "interrupt_type": "input_collection",
+                    "tool_node_id": requirement.node_id,
+                    "tool_name": requirement.tool_name,
+                    "tool_description": requirement.tool_description,
+                    "required_params": [
+                        {
+                            "name": p.name,
+                            "type": p.param_type,
+                            "description": p.description,
+                            "default": p.default,
+                            "has_default": p.has_default,
+                        }
+                        for p in requirement.required_params
+                    ],
+                }
+            return extractor
+
+        # Add to graph's interrupt_before config
+        graph.interrupt_before[req.node_id] = {
+            "condition": None,  # Always interrupt
+            "metadata_extractor": make_metadata_extractor(req),
+            "timeout": None,
+        }
+
+    return requirements
