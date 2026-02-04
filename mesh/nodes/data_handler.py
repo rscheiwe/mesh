@@ -59,6 +59,7 @@ class DataHandlerNode(ToolNode):
         db_session_getter: Optional[Any] = None,
         event_mode: str = "full",
         config: Dict[str, Any] = None,
+        timeout_seconds: float = 60.0,
     ):
         """Initialize DataHandlerNode.
 
@@ -70,12 +71,14 @@ class DataHandlerNode(ToolNode):
             db_session_getter: Function to get database session for given source
             event_mode: Event emission mode
             config: Additional configuration
+            timeout_seconds: Query execution timeout in seconds (default: 60)
         """
         # Store data handler specific config
         self.db_source = db_source
         self.query = query
         self.fixed_params = params or {}
         self.db_session_getter = db_session_getter
+        self.timeout_seconds = timeout_seconds
 
         # Create the tool function that will execute the query
         tool_fn = self._create_query_executor()
@@ -101,8 +104,10 @@ class DataHandlerNode(ToolNode):
                 context: Execution context
 
             Returns:
-                Query results
+                Query results, or timeout error dict if query exceeds timeout
             """
+            import asyncio
+
             # Resolve parameters (fixed + interpolated)
             resolved_params = self._resolve_params(input, context)
 
@@ -115,53 +120,81 @@ class DataHandlerNode(ToolNode):
 
             session = self.db_session_getter(self.db_source)
 
-            # Execute query
-            try:
-                if hasattr(session, 'execute'):
-                    # SQLAlchemy-style session
-                    from sqlalchemy import text
-                    from uuid import UUID
-                    from datetime import date, datetime
-                    from decimal import Decimal
+            def _run_query():
+                """Synchronous query execution to run in executor."""
+                try:
+                    if hasattr(session, 'execute'):
+                        # SQLAlchemy-style session
+                        from sqlalchemy import text
+                        from uuid import UUID
+                        from datetime import date, datetime
+                        from decimal import Decimal
 
-                    result = session.execute(text(self.query), resolved_params)
-                    rows = result.fetchall()
+                        result = session.execute(text(self.query), resolved_params)
+                        rows = result.fetchall()
 
-                    # Convert to list of dicts with JSON-serializable values
-                    if rows:
-                        columns = result.keys()
-                        serialized_rows = []
-                        for row in rows:
-                            row_dict = {}
-                            for col, val in zip(columns, row):
-                                # Convert non-JSON-serializable types
-                                if isinstance(val, UUID):
-                                    row_dict[col] = str(val)
-                                elif isinstance(val, (date, datetime)):
-                                    row_dict[col] = val.isoformat()
-                                elif isinstance(val, Decimal):
-                                    row_dict[col] = float(val)
-                                elif isinstance(val, bytes):
-                                    row_dict[col] = val.decode('utf-8', errors='replace')
-                                else:
-                                    row_dict[col] = val
-                            serialized_rows.append(row_dict)
+                        # Convert to list of dicts with JSON-serializable values
+                        if rows:
+                            columns = result.keys()
+                            serialized_rows = []
+                            for row in rows:
+                                row_dict = {}
+                                for col, val in zip(columns, row):
+                                    # Convert non-JSON-serializable types
+                                    if isinstance(val, UUID):
+                                        row_dict[col] = str(val)
+                                    elif isinstance(val, (date, datetime)):
+                                        row_dict[col] = val.isoformat()
+                                    elif isinstance(val, Decimal):
+                                        row_dict[col] = float(val)
+                                    elif isinstance(val, bytes):
+                                        row_dict[col] = val.decode('utf-8', errors='replace')
+                                    else:
+                                        row_dict[col] = val
+                                serialized_rows.append(row_dict)
 
-                        return {
-                            "rows": serialized_rows,
-                            "count": len(rows),
-                            "query": self.query,
-                            "params": resolved_params,
-                        }
+                            return {
+                                "rows": serialized_rows,
+                                "count": len(rows),
+                                "query": self.query,
+                                "params": resolved_params,
+                            }
+                        else:
+                            return {
+                                "rows": [],
+                                "count": 0,
+                                "query": self.query,
+                                "params": resolved_params,
+                            }
                     else:
-                        return {
-                            "rows": [],
-                            "count": 0,
-                            "query": self.query,
-                            "params": resolved_params,
-                        }
-                else:
-                    raise RuntimeError(f"Unsupported session type: {type(session)}")
+                        raise RuntimeError(f"Unsupported session type: {type(session)}")
+                finally:
+                    # Close session if needed
+                    if hasattr(session, 'close'):
+                        session.close()
+
+            # Execute query with timeout
+            try:
+                loop = asyncio.get_event_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, _run_query),
+                    timeout=self.timeout_seconds
+                )
+                return result
+
+            except asyncio.TimeoutError:
+                # Return structured timeout error that LLM can handle
+                return {
+                    "error": True,
+                    "error_type": "timeout",
+                    "message": f"Query execution timed out after {self.timeout_seconds} seconds. "
+                               f"The query may be too complex or the database may be under heavy load.",
+                    "rows": [],
+                    "count": 0,
+                    "query": self.query,
+                    "params": resolved_params,
+                    "timeout_seconds": self.timeout_seconds,
+                }
 
             except Exception as e:
                 raise RuntimeError(
@@ -169,10 +202,6 @@ class DataHandlerNode(ToolNode):
                     f"Query: {self.query}\n"
                     f"Params: {resolved_params}"
                 ) from e
-            finally:
-                # Close session if needed
-                if hasattr(session, 'close'):
-                    session.close()
 
         return execute_query
 
@@ -337,6 +366,7 @@ def create_data_handler_from_db(
     db_source = None
     query = None
     params = {}
+    timeout_seconds = 60.0  # Default 1 minute
 
     for inp in inputs:
         if inp.get("name") == "db_source":
@@ -345,6 +375,8 @@ def create_data_handler_from_db(
             query = inp.get("default") or inp.get("value")
         elif inp.get("name") == "params":
             params = inp.get("default") or inp.get("value") or {}
+        elif inp.get("name") == "timeout_seconds":
+            timeout_seconds = float(inp.get("default") or inp.get("value") or 60.0)
 
     if not db_source or not query:
         raise ValueError(
@@ -357,4 +389,5 @@ def create_data_handler_from_db(
         db_source=db_source,
         query=query,
         params=params,
+        timeout_seconds=timeout_seconds,
     )
