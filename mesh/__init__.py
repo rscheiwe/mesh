@@ -30,7 +30,7 @@ Example:
     ...     print(event)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Core components
 from mesh.core.graph import ExecutionGraph, Edge, NodeConfig
@@ -107,6 +107,17 @@ from mesh.streaming.modes import (
     DebugInfo,
 )
 
+# Input collection (auto-detect tools needing user input)
+from mesh.input_collection import (
+    RequiredParam,
+    ToolInputRequirement,
+    inspect_tool_required_params,
+    inspect_data_handler_required_params,
+    analyze_graph_input_requirements,
+    inject_input_collection_interrupts,
+    setup_input_collection,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -168,4 +179,12 @@ __all__ = [
     "StateUpdate",
     "StreamMessage",
     "DebugInfo",
+    # Input collection
+    "RequiredParam",
+    "ToolInputRequirement",
+    "inspect_tool_required_params",
+    "inspect_data_handler_required_params",
+    "analyze_graph_input_requirements",
+    "inject_input_collection_interrupts",
+    "setup_input_collection",
 ]
