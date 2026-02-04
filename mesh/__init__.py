@@ -30,7 +30,7 @@ Example:
     ...     print(event)
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Core components
 from mesh.core.graph import ExecutionGraph, Edge, NodeConfig
