@@ -183,13 +183,15 @@ class DataHandlerNode(ToolNode):
                 return result
 
             except asyncio.TimeoutError:
-                # Return structured timeout error that LLM can handle
+                # Return timeout error IN the rows so it surfaces via {{data_handler.rows}}
+                # This ensures the LLM sees the error since only rows/count are interpolatable
+                timeout_message = (
+                    f"QUERY TIMEOUT: The database query exceeded the {self.timeout_seconds} second limit. "
+                    f"The query may be too complex or the database may be under heavy load. "
+                    f"Consider simplifying the query or trying again later."
+                )
                 return {
-                    "error": True,
-                    "error_type": "timeout",
-                    "message": f"Query execution timed out after {self.timeout_seconds} seconds. "
-                               f"The query may be too complex or the database may be under heavy load.",
-                    "rows": [],
+                    "rows": [{"_error": "timeout", "_message": timeout_message}],
                     "count": 0,
                     "query": self.query,
                     "params": resolved_params,
