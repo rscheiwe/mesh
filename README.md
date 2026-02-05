@@ -48,22 +48,23 @@ Comprehensive guides and API reference:
 
 ```bash
 # Basic installation
-pip install mesh
-
-# With Vel SDK support
-pip install mesh[vel]
+pip install agentmesh-py
 
 # With OpenAI Agents SDK support
-pip install mesh[agents]
+pip install agentmesh-py[agents]
 
 # With FastAPI server support
-pip install mesh[server]
+pip install agentmesh-py[server]
 
 # Development installation
-pip install mesh[dev]
+pip install agentmesh-py[dev]
 
 # All features
-pip install mesh[all]
+pip install agentmesh-py[all]
+
+# With Vel SDK support (install separately)
+pip install agentmesh-py
+pip install git+https://github.com/rscheiwe/vel.git
 ```
 
 ## Configuration

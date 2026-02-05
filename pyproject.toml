@@ -3,12 +3,13 @@ requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mesh"
-version = "0.1.5"
+name = "agentmesh-py"
+version = "0.1.6"
 description = "Python Agent Graph Orchestration Engine - Build multi-agent workflows as executable graphs"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "Richard Scheiwe", email = "rscheiwe@users.noreply.github.com"}
 ]
@@ -16,7 +17,6 @@ keywords = ["agents", "graph", "orchestration", "workflow", "llm", "ai", "stream
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -47,14 +47,13 @@ server = [
     "sse-starlette>=1.8.0",
     "uvicorn>=0.24.0",
 ]
-vel = [
-    "vel @ git+https://github.com/rscheiwe/vel.git",
-]
+# vel extra removed - install Vel separately:
+# pip install git+https://github.com/rscheiwe/vel.git
 agents = [
     "openai-agents>=0.1.0",
 ]
 all = [
-    "mesh[dev,server,vel,agents]",
+    "agentmesh-py[dev,server,agents]",
 ]
 
 [project.urls]

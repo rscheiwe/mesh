@@ -1,0 +1,21 @@
+include LICENSE
+include README.md
+include mesh/py.typed
+recursive-include mesh *.typed
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]
+recursive-exclude * *.so
+exclude .gitignore
+exclude .env
+exclude .env.example
+prune build
+prune dist
+prune venv
+prune .venv
+prune tests
+prune examples
+prune docs
+prune features
+prune .pytest_cache
+prune .mypy_cache
+prune *.egg-info
