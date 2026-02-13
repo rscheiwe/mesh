@@ -247,13 +247,15 @@ def analyze_graph_input_requirements(
     from mesh.nodes.data_handler import DataHandlerNode
     from mesh.nodes.llm import LLMNode
     from mesh.nodes.agent import AgentNode
+    from mesh.nodes.conversation import ConversationNode
 
     requirements = []
 
-    # Find all LLM and Agent nodes
+    # Find all LLM and Agent nodes (exclude ConversationNode — it collects
+    # tool parameters conversationally via the agent, not via a form)
     llm_agent_nodes = set()
     for node_id, node in graph.nodes.items():
-        if isinstance(node, (LLMNode, AgentNode)):
+        if isinstance(node, (LLMNode, AgentNode)) and not isinstance(node, ConversationNode):
             llm_agent_nodes.add(node_id)
 
     logger.info(f"[InputCollection] Found {len(llm_agent_nodes)} LLM/Agent nodes: {llm_agent_nodes}")

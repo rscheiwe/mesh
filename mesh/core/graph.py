@@ -81,6 +81,8 @@ class GraphMetadata:
     tool_nodes: List[str]
     condition_nodes: List[str]
     loop_nodes: List[str]
+    data_handler_nodes: List[str]
+    api_handler_nodes: List[str]
     final_nodes: List[str]
     intermediate_nodes: List[str]
     graph_type: str  # single_agent, multi_agent, tool_chain, hybrid
@@ -219,6 +221,8 @@ class ExecutionGraph:
         tool_nodes = []
         condition_nodes = []
         loop_nodes = []
+        data_handler_nodes = []
+        api_handler_nodes = []
 
         for node_id, node in nodes.items():
             node_type = node.__class__.__name__
@@ -232,6 +236,10 @@ class ExecutionGraph:
                 condition_nodes.append(node_id)
             elif node_type == "LoopNode":
                 loop_nodes.append(node_id)
+            elif node_type == "DataHandlerNode":
+                data_handler_nodes.append(node_id)
+            elif node_type == "APIHandlerNode":
+                api_handler_nodes.append(node_id)
 
         # Find final nodes (nodes that directly feed into END or ending nodes)
         final_nodes = []
@@ -270,6 +278,8 @@ class ExecutionGraph:
             tool_nodes=tool_nodes,
             condition_nodes=condition_nodes,
             loop_nodes=loop_nodes,
+            data_handler_nodes=data_handler_nodes,
+            api_handler_nodes=api_handler_nodes,
             final_nodes=final_nodes,
             intermediate_nodes=intermediate_nodes,
             graph_type=graph_type,

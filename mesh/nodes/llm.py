@@ -40,6 +40,7 @@ class LLMNode(BaseNode):
         max_tokens: Optional[int] = None,
         provider: str = "openai",
         event_mode: str = "full",
+        auto_inject_context: bool = False,
         config: Dict[str, Any] = None,
     ):
         """Initialize LLM node.
@@ -56,6 +57,9 @@ class LLMNode(BaseNode):
                 - "status_only": Only progress indicators (mesh-node-start/complete)
                 - "transient_events": All events prefixed with data-llm-node-*
                 - "silent": No events
+            auto_inject_context: If True, automatically inject upstream DataHandler,
+                Tool, and RAG node outputs into the system prompt as structured context.
+                The user does not need to manually reference {{variables}} for these nodes.
             config: Additional configuration
         """
         super().__init__(id, config or {})
@@ -65,6 +69,7 @@ class LLMNode(BaseNode):
         self.max_tokens = max_tokens
         self.provider = provider
         self.event_mode = event_mode
+        self.auto_inject_context = auto_inject_context
 
         # Initialize provider client
         self._client = None
@@ -153,6 +158,13 @@ class LLMNode(BaseNode):
         resolved_prompt = ""
         if self.system_prompt:
             resolved_prompt = await resolver.resolve(self.system_prompt)
+
+        # Auto-inject upstream context if enabled (appended after user's prompt)
+        if self.auto_inject_context:
+            from mesh.utils.context_injection import UpstreamContextBuilder
+            upstream_context = UpstreamContextBuilder.build(context, self.system_prompt or "")
+            if upstream_context:
+                resolved_prompt = resolved_prompt + "\n\n" + upstream_context
 
         # Build messages
         messages = []

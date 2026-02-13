@@ -100,13 +100,14 @@ class ExecutionContext:
         self.loop_iterations[edge_key] = current + 1
         return current + 1
 
-    def add_executed_node(self, node_id: str, output: Any, status: str = "FINISHED") -> None:
+    def add_executed_node(self, node_id: str, output: Any, status: str = "FINISHED", node_type: str = None) -> None:
         """Record a node execution result.
 
         Args:
             node_id: ID of the executed node
             output: Output from the node
             status: Execution status
+            node_type: Python class name of the node (e.g., "DataHandlerNode", "ToolNode")
         """
         self.executed_data.append(
             {
@@ -114,6 +115,7 @@ class ExecutionContext:
                 "output": output,
                 "status": status,
                 "timestamp": None,  # Could add timestamp if needed
+                "node_type": node_type,
             }
         )
 

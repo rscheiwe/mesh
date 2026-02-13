@@ -21,6 +21,7 @@ from mesh.nodes.condition import ConditionNode, Condition
 from mesh.nodes.loop import LoopNode
 from mesh.nodes.rag import RAGNode
 from mesh.nodes.data_handler import DataHandlerNode
+from mesh.nodes.api_handler import APIHandlerNode
 from mesh.nodes.conversation import ConversationNode
 from mesh.nodes.orchestrator import OrchestratorNode
 from mesh.nodes.sub_agent import SubAgentNode
@@ -90,6 +91,7 @@ class ReactFlowParser:
         "dynamicToolSelectorAgentflow": "dynamic_tool_selector",  # Meta-tool for runtime discovery
         "ragAgentflow": "rag",
         "dataHandlerAgentflow": "data_handler",
+        "apiAgentflow": "api_handler",
         "conditionAgentflow": "condition",
         "conditionflow": "condition",
         "foreachAgentflow": "loop",  # ForEach uses loop handler (distinguishes via config)
@@ -231,6 +233,7 @@ class ReactFlowParser:
         # This must happen after graph construction so we have access to all nodes
         from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
         from mesh.nodes.tool import ToolNode
+        from mesh.nodes.conversation import ConversationNode
 
         for node_id, node in graph.nodes.items():
             if isinstance(node, DynamicToolSelectorNode):
@@ -243,6 +246,18 @@ class ReactFlowParser:
                             connected_tools.append(source_node)
                 # Wire the connected tools to the selector
                 node.set_connected_tools(connected_tools)
+
+        # Wire upstream ToolNodes into ConversationNodes as available tools
+        for node_id, node in graph.nodes.items():
+            if isinstance(node, ConversationNode):
+                upstream_tools = []
+                for edge in edges:
+                    if edge.target == node_id:
+                        source_node = graph.nodes.get(edge.source)
+                        if isinstance(source_node, ToolNode):
+                            upstream_tools.append(source_node)
+                if upstream_tools:
+                    node.set_upstream_tools(upstream_tools)
 
         graph.validate()
 
@@ -459,6 +474,9 @@ class ReactFlowParser:
             elif node_type == "data_handler":
                 return self._create_data_handler_node(node_id, config)
 
+            elif node_type == "api_handler":
+                return self._create_api_handler_node(node_id, config)
+
             elif node_type == "condition":
                 return self._create_condition_node(node_id, config)
 
@@ -562,6 +580,7 @@ class ReactFlowParser:
             use_native_events=use_native_events,
             event_mode=event_mode,
             streaming=streaming,
+            auto_inject_context=config.get("autoInjectContext", False),
             config=config,
         )
 
@@ -1049,6 +1068,7 @@ Returns:
             max_tokens=config.get("maxTokens") or config.get("max_tokens"),
             provider=config.get("provider", "openai"),
             event_mode=config.get("eventMode", "full"),
+            auto_inject_context=config.get("autoInjectContext", False),
             config=config,
         )
 
@@ -1204,6 +1224,42 @@ Returns:
             query=config.get("query", ""),
             params=params,
             event_mode=config.get("eventMode", "full"),
+            config=config,
+        )
+
+    def _create_api_handler_node(self, node_id: str, config: Dict[str, Any]) -> APIHandlerNode:
+        """Create APIHandlerNode from config.
+
+        Supports {{variable}} resolution in endpoint, headers, and query params.
+        """
+        # Parse headers - handle both string and dict
+        headers = config.get("headers")
+        if isinstance(headers, str):
+            try:
+                headers = json.loads(headers) if headers.strip() else {}
+            except json.JSONDecodeError:
+                headers = {}
+        headers = headers or {}
+
+        # Parse query params - handle both string and dict
+        query_params = config.get("queryParams") or config.get("query_params")
+        if isinstance(query_params, str):
+            try:
+                query_params = json.loads(query_params) if query_params.strip() else {}
+            except json.JSONDecodeError:
+                query_params = {}
+        query_params = query_params or {}
+
+        return APIHandlerNode(
+            id=node_id,
+            base_url=config.get("baseUrl") or config.get("base_url", ""),
+            endpoint=config.get("endpoint", "/"),
+            method=config.get("method", "GET"),
+            headers=headers,
+            query_params=query_params,
+            timeout_seconds=float(config.get("timeoutSeconds", 30)),
+            event_mode=config.get("eventMode", "full"),
+            auto_inject_context=config.get("autoInjectContext", False),
             config=config,
         )
 

@@ -119,6 +119,16 @@ class ConversationNode(AgentNode):
             # We'll check for structured output in the response manually.
             pass
 
+        self._upstream_tool_nodes = []
+
+    def set_upstream_tools(self, tool_nodes: list) -> None:
+        """Store upstream ToolNode references for later injection into agent.
+
+        These tools will be converted to ToolSpecs and added to the agent
+        when execution begins (after tool functions are loaded from DB).
+        """
+        self._upstream_tool_nodes = tool_nodes
+
     async def _execute_impl(
         self,
         input: Any,
@@ -138,6 +148,26 @@ class ConversationNode(AgentNode):
             - conversation_pending=True (via approval_pending) if more turns needed
             - Extracted parameters as output if complete
         """
+        # Inject upstream ToolNode functions as agent tools (one-time)
+        if self._upstream_tool_nodes:
+            from vel.tools import ToolSpec
+            for tool_node in self._upstream_tool_nodes:
+                tool_fn = getattr(tool_node, 'tool_fn', None)
+                if tool_fn and callable(tool_fn):
+                    tool_spec = ToolSpec.from_function(
+                        tool_fn,
+                        name=tool_node.function_name or tool_fn.__name__,
+                        description=tool_node.function_doc or "",
+                    )
+                    # Register in _instance_tools dict AND _tool_names list
+                    # (Vel requires both for _get_tool_schemas to include the tool)
+                    if hasattr(self.agent, '_instance_tools') and isinstance(self.agent._instance_tools, dict):
+                        self.agent._instance_tools[tool_spec.name] = tool_spec
+                    if hasattr(self.agent, '_tool_names') and isinstance(self.agent._tool_names, list):
+                        if tool_spec.name not in self.agent._tool_names:
+                            self.agent._tool_names.append(tool_spec.name)
+            self._upstream_tool_nodes = []  # Clear so injection only happens once
+
         # Get conversation history - prefer messages from client (stateless pattern)
         # The client manages history and passes the full array with each request
         history_key = f"_conversation_history_{self.id}"
@@ -485,6 +515,104 @@ class ConversationNode(AgentNode):
                                 )
                             )
                         raise RuntimeError(f"Conversation agent error: {error_msg}")
+
+                    elif event_type == "tool-input-start":
+                        # Tool call begins — emit virtual tool node start for UI card
+                        tool_name = event.get("toolName", "tool")
+                        tool_call_id = event.get("toolCallId", "")
+                        _active_tool_node_id = f"{self.id}_tool_{tool_name}_{tool_call_id}"
+                        if self.event_mode == "full":
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.NODE_START,
+                                    node_id=_active_tool_node_id,
+                                    metadata={
+                                        "tool_name": tool_name,
+                                        "node_type": "tool",
+                                        "tool_call_id": tool_call_id,
+                                    },
+                                )
+                            )
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.TOOL_INPUT_START,
+                                    node_id=self.id,
+                                    metadata={
+                                        "tool_call_id": tool_call_id,
+                                        "tool_name": tool_name,
+                                        "node_type": "conversation",
+                                        "agent_id": f"{self.id}_agent",
+                                    },
+                                    raw_event=event,
+                                )
+                            )
+
+                    elif event_type == "tool-input-delta":
+                        # Tool argument chunk streaming (AI SDK format)
+                        if self.event_mode == "full":
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.TOOL_INPUT_DELTA,
+                                    node_id=self.id,
+                                    metadata={
+                                        "tool_call_id": event.get("toolCallId"),
+                                        "node_type": "conversation",
+                                        "agent_id": f"{self.id}_agent",
+                                    },
+                                    raw_event=event,
+                                )
+                            )
+
+                    elif event_type == "tool-input-available":
+                        # Tool arguments complete (AI SDK format)
+                        if self.event_mode == "full":
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.TOOL_INPUT_AVAILABLE,
+                                    node_id=self.id,
+                                    metadata={
+                                        "tool_call_id": event.get("toolCallId"),
+                                        "tool_name": event.get("toolName"),
+                                        "input": event.get("input"),
+                                        "node_type": "conversation",
+                                        "agent_id": f"{self.id}_agent",
+                                    },
+                                    raw_event=event,
+                                )
+                            )
+
+                    elif event_type == "tool-output-available":
+                        # Tool execution result — emit virtual tool node complete for UI card
+                        tool_name = event.get("toolName", "tool")
+                        tool_call_id = event.get("toolCallId", "")
+                        _active_tool_node_id = f"{self.id}_tool_{tool_name}_{tool_call_id}"
+                        tool_output = event.get("output")
+                        if self.event_mode == "full":
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.TOOL_OUTPUT_AVAILABLE,
+                                    node_id=self.id,
+                                    output=tool_output,
+                                    metadata={
+                                        "tool_call_id": tool_call_id,
+                                        "node_type": "conversation",
+                                        "agent_id": f"{self.id}_agent",
+                                    },
+                                    raw_event=event,
+                                )
+                            )
+                            await context.emit_event(
+                                ExecutionEvent(
+                                    type=EventType.NODE_COMPLETE,
+                                    node_id=_active_tool_node_id,
+                                    output=tool_output,
+                                    metadata={
+                                        "tool_name": tool_name,
+                                        "node_type": "tool",
+                                        "tool_call_id": tool_call_id,
+                                    },
+                                )
+                            )
 
                     elif event_type.startswith("data-"):
                         # Custom data events (passthrough)

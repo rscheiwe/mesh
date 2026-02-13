@@ -162,20 +162,21 @@ class Executor:
                 from mesh.nodes.tool import ToolNode
                 from mesh.nodes.start import StartNode
                 from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
+                from mesh.nodes.conversation import ConversationNode
 
-                # Skip Tool nodes that only feed into DynamicToolSelector
+                # Skip Tool nodes that only feed into DynamicToolSelector or ConversationNode
                 # These nodes provide metadata only, not execution
                 if isinstance(node, ToolNode):
-                    # Check if ALL children are DynamicToolSelector nodes
+                    # Check if ALL children are tool-consumer nodes (DynamicToolSelector or ConversationNode)
                     children = self.graph.children.get(current.node_id, [])
-                    all_children_are_selectors = (
+                    all_children_are_tool_consumers = (
                         len(children) > 0 and
                         all(
-                            isinstance(self.graph.get_node(child_id), DynamicToolSelectorNode)
+                            isinstance(self.graph.get_node(child_id), (DynamicToolSelectorNode, ConversationNode))
                             for child_id in children
                         )
                     )
-                    if all_children_are_selectors:
+                    if all_children_are_tool_consumers:
                         # Skip execution - the DynamicToolSelector already has tool info from parsing
                         # Queue children with empty output (they don't need it from tool execution)
                         for child_id in children:
@@ -338,7 +339,7 @@ class Executor:
                     context.chat_history.extend(result.chat_history)
 
                 # Store execution data
-                context.add_executed_node(current.node_id, result.output)
+                context.add_executed_node(current.node_id, result.output, node_type=node.__class__.__name__)
 
                 # Emit node complete event
                 yield ExecutionEvent(
@@ -852,7 +853,8 @@ class Executor:
                 # Conversation node - re-execute the same node with full resume_input
                 # resume_input contains: message, user_message, and messages array
                 # The ConversationNode will use the messages array for history (stateless pattern)
-                queue.append(NodeQueueItem(node_id=approval_node_id, inputs=resume_input))
+                # Insert at front so conversation runs before any deferred sibling nodes
+                queue.insert(0, NodeQueueItem(node_id=approval_node_id, inputs=resume_input))
             else:
                 # Regular approval node - proceed to children
                 child_node_ids = self.graph.get_children(approval_node_id)
@@ -945,7 +947,7 @@ class Executor:
                     context.chat_history.extend(result.chat_history)
 
                 # Store execution data
-                context.add_executed_node(current.node_id, result.output)
+                context.add_executed_node(current.node_id, result.output, node_type=node.__class__.__name__)
 
                 # Emit node complete event
                 yield ExecutionEvent(
@@ -1346,7 +1348,7 @@ class Executor:
                     context.state.update(result.state)
                 if result.chat_history:
                     context.chat_history.extend(result.chat_history)
-                context.add_executed_node(current.node_id, result.output)
+                context.add_executed_node(current.node_id, result.output, node_type=node.__class__.__name__)
 
                 yield ExecutionEvent(
                     type=EventType.NODE_COMPLETE,
@@ -1675,7 +1677,7 @@ class Executor:
                 if result.chat_history:
                     context.chat_history.extend(result.chat_history)
 
-                context.add_executed_node(current.node_id, result.output)
+                context.add_executed_node(current.node_id, result.output, node_type=node.__class__.__name__)
 
                 yield ExecutionEvent(
                     type=EventType.NODE_COMPLETE,

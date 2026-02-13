@@ -55,6 +55,7 @@ class AgentNode(BaseNode):
         use_native_events: bool = False,
         event_mode: str = "full",
         streaming: bool = True,
+        auto_inject_context: bool = False,
         config: Dict[str, Any] = None,
     ):
         """Initialize agent node.
@@ -73,6 +74,9 @@ class AgentNode(BaseNode):
             streaming: If True (default), use run_stream() for token-by-token streaming.
                       If False, use run() for non-streaming execution (faster, returns immediately).
                       Non-streaming is useful for intermediate nodes or when structured output is needed.
+            auto_inject_context: If True, automatically inject upstream DataHandler,
+                Tool, and RAG node outputs into the system prompt as structured context.
+                The user does not need to manually reference {{variables}} for these nodes.
             config: Additional configuration
         """
         super().__init__(id, config or {})
@@ -81,6 +85,7 @@ class AgentNode(BaseNode):
         self.use_native_events = use_native_events
         self.event_mode = event_mode
         self.streaming = streaming
+        self.auto_inject_context = auto_inject_context
         self.agent_type = self._detect_agent_type(agent)
 
         # Initialize Vel SDK translator if available and not using native events
@@ -199,6 +204,14 @@ class AgentNode(BaseNode):
             if self.system_prompt:
                 resolver = VariableResolver(context)
                 resolved_prompt = await resolver.resolve(self.system_prompt)
+
+                # Auto-inject upstream context if enabled (appended after user's prompt)
+                if self.auto_inject_context:
+                    from mesh.utils.context_injection import UpstreamContextBuilder
+                    upstream_context = UpstreamContextBuilder.build(context, self.system_prompt or "")
+                    if upstream_context:
+                        resolved_prompt = resolved_prompt + "\n\n" + upstream_context
+
                 # Update agent system prompt if possible
                 self._update_system_prompt(resolved_prompt)
 
