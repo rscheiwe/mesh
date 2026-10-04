@@ -56,6 +56,16 @@ all = [
     "agentmesh-py[dev,server,agents]",
 ]
 
+[dependency-groups]
+# Test-only. Vel is pinned to a commit so offline DAG tests run a real vel.Agent.
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "vel-ai @ git+https://github.com/rscheiwe/vel.git@6b6a63da55275de311232dc15530ea17aef238ae",
+]
+
 [project.urls]
 Homepage = "https://github.com/rscheiwe/mesh"
 Documentation = "https://github.com/rscheiwe/mesh#readme"
@@ -87,6 +97,10 @@ disallow_untyped_defs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "live: calls real LLM APIs; needs API keys in the environment (deselected by default)",
+]
+addopts = "-m 'not live'"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
