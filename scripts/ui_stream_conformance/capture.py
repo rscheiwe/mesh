@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from examples.dags import brief_to_recommendation as dag
-from examples.dags.scripted import json_turn, scripted_agent, text_turn
+from examples.dags.scripted import json_turn, scripted_agent, text_turn, tool_turn
 from mesh import ExecutionContext, Executor, MemoryBackend, StateGraph, UIMessageStreamAdapter
 from tests.dags.test_dag_a import ACME_BRIEF, ACME_SLOTS
 
@@ -52,6 +52,19 @@ async def interrupt():
     (OUT / "interrupt.sse").write_text("".join(frames))
 
 
+async def followup(name, script):
+    from examples.dags import followup_tools as dag_c
+
+    state = dag_c.recommended_state()
+    agent = scripted_agent(
+        "followup", script, tools=dag_c.FOLLOWUP_TOOLS, tool_context={"state": state}
+    )
+    graph = dag_c.build_graph(agent)
+    adapter = UIMessageStreamAdapter(message_id=f"msg-{name}", graph=graph)
+    events = Executor(graph, MemoryBackend()).execute("follow-up", dag.new_context(state))
+    (OUT / f"{name}.sse").write_text("".join([f async for f in adapter.sse(events)]))
+
+
 async def main():
     original_scale = dag.scale
     await dag_a(
@@ -91,6 +104,14 @@ async def main():
         {"text": ACME_BRIEF},
     )
     await interrupt()
+    await followup(
+        "dag_c_what_if",
+        [tool_turn("c1", "what_if", {"budget": 40000}), text_turn("At $40k the bundle grows.")],
+    )
+    await followup(
+        "dag_c_tool_error",
+        [tool_turn("c1", "explain_product", {}), text_turn("I could not look that up.")],
+    )
     print(sorted(p.name for p in OUT.iterdir()))
 
 
