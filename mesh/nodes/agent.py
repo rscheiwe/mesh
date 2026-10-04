@@ -18,6 +18,7 @@ from mesh.utils.input_parser import (
     detect_input_variables,
     parse_natural_language_input
 )
+from mesh.nodes.condition import is_condition_output
 from mesh.core.events import (
     create_mesh_node_start_event,
     create_mesh_node_complete_event,
@@ -1382,6 +1383,10 @@ class AgentNode(BaseNode):
         if isinstance(input, str):
             return input
         elif isinstance(input, dict):
+            # Condition nodes wrap their input as {"input": ..., "fulfilled": [...]};
+            # the agent should see what the condition routed, not the wrapper.
+            if is_condition_output(input):
+                return self._extract_message(input["input"])
             # Try common keys
             for key in ["content", "message", "text", "input", "question"]:
                 if key in input:

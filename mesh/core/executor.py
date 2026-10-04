@@ -131,6 +131,8 @@ class Executor:
         """
         # Set event emitter in context
         context._event_emitter = self.events
+        # Branch skips are per run; a reused context starts clean
+        context.skipped_nodes = set()
 
         # Initialize execution state
         queue: List[NodeQueueItem] = []
@@ -539,10 +541,15 @@ class Executor:
 
         # Handle conditional branching - determine nodes to ignore
         ignore_nodes = await self._determine_nodes_to_ignore(node_id, result)
+        if ignore_nodes:
+            self._mark_skipped(ignore_nodes, context)
+            self._release_satisfied_joins(queue, waiting_nodes, context)
 
         for child_id in child_node_ids:
             if child_id in ignore_nodes:
                 continue
+            # A node reached again (e.g. via a loop) is live for this pass
+            context.skipped_nodes.discard(child_id)
 
             # Check if this edge is a loop edge with conditions
             edge = self._get_edge(node_id, child_id)
@@ -584,8 +591,8 @@ class Executor:
                 # Add this parent's output
                 waiting_nodes[child_id].received_inputs[node_id] = result.output
 
-            # Check if all inputs received
-            if self._has_all_inputs(waiting_nodes[child_id]):
+            # Check if all inputs received (skipped parents count as satisfied)
+            if self._has_all_inputs(waiting_nodes[child_id], context.skipped_nodes):
                 # Combine inputs and queue
                 combined = self._combine_inputs(waiting_nodes[child_id].received_inputs)
                 queue.append(NodeQueueItem(node_id=child_id, inputs=combined))
@@ -632,11 +639,13 @@ class Executor:
         conditions = result.metadata["conditions"]
         child_ids = self.graph.get_children(node_id)
 
-        # For each condition, if not fulfilled, ignore its target nodes
+        # Ignore targets of unfulfilled conditions, unless another fulfilled
+        # condition (e.g. the default) routes to the same node
+        fulfilled_targets = {c.get("target") for c in conditions if c.get("fulfilled", False)}
         for condition in conditions:
             if not condition.get("fulfilled", False):
                 target = condition.get("target")
-                if target and target in child_ids:
+                if target and target in child_ids and target not in fulfilled_targets:
                     ignore_nodes.add(target)
 
         return ignore_nodes
@@ -703,17 +712,57 @@ class Executor:
         context.increment_loop_iteration(edge_key)
         return True
 
-    def _has_all_inputs(self, waiting_node: WaitingNode) -> bool:
+    def _has_all_inputs(
+        self, waiting_node: WaitingNode, skipped: Optional[Set[str]] = None
+    ) -> bool:
         """Check if a waiting node has received all expected inputs.
+
+        Parents on branches that a condition did not take will never deliver,
+        so they are excluded from the expected set.
 
         Args:
             waiting_node: WaitingNode to check
+            skipped: Node IDs skipped by conditional branching this run
 
         Returns:
-            True if all inputs received
+            True if all live inputs received
         """
         received = set(waiting_node.received_inputs.keys())
-        return received >= waiting_node.expected_inputs
+        expected = waiting_node.expected_inputs - (skipped or set())
+        return bool(received) and received >= expected
+
+    def _mark_skipped(self, ignored: Set[str], context: ExecutionContext) -> None:
+        """Mark ignored branch targets, and every node reachable only through them.
+
+        A descendant is skipped once all of its parents are skipped; a join
+        with at least one live parent is not.
+        """
+        frontier = list(ignored)
+        while frontier:
+            node_id = frontier.pop()
+            if node_id in context.skipped_nodes:
+                continue
+            context.skipped_nodes.add(node_id)
+            for child_id in self.graph.get_children(node_id):
+                parents = self.graph.get_parents(child_id)
+                if parents and parents <= context.skipped_nodes:
+                    frontier.append(child_id)
+
+    def _release_satisfied_joins(
+        self,
+        queue: List[NodeQueueItem],
+        waiting_nodes: Dict[str, WaitingNode],
+        context: ExecutionContext,
+    ) -> None:
+        """Queue joins whose remaining parents were just skipped."""
+        for child_id in list(waiting_nodes):
+            waiting = waiting_nodes[child_id]
+            if child_id in context.skipped_nodes:
+                continue
+            if self._has_all_inputs(waiting, context.skipped_nodes):
+                combined = self._combine_inputs(waiting.received_inputs)
+                queue.append(NodeQueueItem(node_id=child_id, inputs=combined))
+                del waiting_nodes[child_id]
 
     def _combine_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Combine inputs from multiple parent nodes.

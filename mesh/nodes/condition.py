@@ -7,10 +7,41 @@ It's used for routing workflow based on data or state.
 from typing import List, Dict, Callable, Any, Optional, Union
 from dataclasses import dataclass
 import inspect
+import logging
 
 from mesh.nodes.base import BaseNode, NodeResult
 from mesh.core.state import ExecutionContext
 from mesh.core.events import ExecutionEvent, EventType, transform_event_for_transient_mode
+
+logger = logging.getLogger(__name__)
+
+ON_ERROR_MODES = ("raise", "unfulfilled")
+
+
+def is_condition_output(value: Any) -> bool:
+    """True if ``value`` is a deterministic ConditionNode's pass-through output."""
+    return (
+        isinstance(value, dict)
+        and "input" in value
+        and "fulfilled" in value
+        and "unfulfilled" in value
+    )
+
+
+def _required_positional_count(fn: Callable) -> int:
+    """Count positional parameters a predicate requires (defaults excluded).
+
+    A lambda such as ``lambda x, k=key: ...`` takes one required argument and
+    must be called as ``predicate(input)``, not ``predicate(input, context)``.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (ValueError, TypeError):
+        return 1
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+        return 2
+    return sum(1 for p in params if p.kind in positional and p.default is inspect.Parameter.empty)
 
 
 # Type alias for predicates that can take input only or input + context
@@ -145,6 +176,7 @@ class ConditionNode(BaseNode):
         default_target: Optional[str] = None,
         event_mode: str = "full",
         config: Dict[str, Any] = None,
+        on_error: str = "unfulfilled",
     ):
         """Initialize condition node.
 
@@ -162,8 +194,15 @@ class ConditionNode(BaseNode):
                 - "transient_events": All events prefixed with data-condition-node-*
                 - "silent": No events
             config: Additional configuration
+            on_error: What a raising predicate means (deterministic mode)
+                - "unfulfilled" (default): log it and treat the branch as not taken
+                - "raise": fail the node, so a bug cannot silently misroute
         """
         super().__init__(id, config or {})
+
+        if on_error not in ON_ERROR_MODES:
+            raise ValueError(f"on_error must be one of {ON_ERROR_MODES}, got: {on_error}")
+        self.on_error = on_error
 
         # Validate routing mode
         if condition_routing not in ["deterministic", "ai"]:
@@ -277,18 +316,9 @@ class ConditionNode(BaseNode):
         # Evaluate each condition
         for condition in self.conditions:
             try:
-                # Check if predicate accepts context (2 parameters)
-                # by inspecting the function signature
+                # Pass context only to predicates that require a second argument
                 predicate = condition.predicate
-                try:
-                    sig = inspect.signature(predicate)
-                    param_count = len(sig.parameters)
-                except (ValueError, TypeError):
-                    # Fallback for built-ins or other callables
-                    param_count = 1
-
-                # Call predicate with appropriate arguments
-                if param_count >= 2:
+                if _required_positional_count(predicate) >= 2:
                     # Predicate accepts input AND context
                     is_fulfilled = predicate(input, context)
                 else:
@@ -301,10 +331,17 @@ class ConditionNode(BaseNode):
                     unfulfilled_conditions.append(condition)
 
             except Exception as e:
-                # Treat evaluation errors as unfulfilled
+                if self.on_error == "raise":
+                    raise RuntimeError(
+                        f"Condition '{condition.name}' on node '{self.id}' failed: {e}"
+                    ) from e
+                logger.warning(
+                    "Condition '%s' on node '%s' failed, treating as unfulfilled: %s",
+                    condition.name,
+                    self.id,
+                    e,
+                )
                 unfulfilled_conditions.append(condition)
-                # Log the error
-                print(f"Condition '{condition.name}' evaluation failed: {e}")
 
         # If no conditions fulfilled and default exists, use it
         if not fulfilled_conditions and self.default_target:

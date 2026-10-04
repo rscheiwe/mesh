@@ -3,7 +3,7 @@
 This module provides state tracking and persistence coordination during execution.
 """
 
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 from dataclasses import dataclass, field
 import uuid
 
@@ -44,6 +44,10 @@ class ExecutionContext:
 
     # Event emitter reference (set by executor)
     _event_emitter: Optional[Any] = field(default=None, repr=False)
+
+    # Nodes on branches a condition did not take this run (set by executor).
+    # Joins treat these parents as satisfied instead of waiting on them forever.
+    skipped_nodes: Set[str] = field(default_factory=set, repr=False)
 
     async def emit_event(self, event: Any) -> None:
         """Emit an event through the execution context.

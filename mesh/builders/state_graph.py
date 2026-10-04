@@ -21,6 +21,15 @@ from mesh.utils.errors import GraphValidationError
 from mesh.utils.mermaid import generate_mermaid_code, save_mermaid_image, get_default_visualization_dir
 
 
+def _branch_predicate(condition_fn: Callable[[Any], str], key: str) -> Callable[[Any], bool]:
+    """Single-argument predicate: does ``condition_fn`` select branch ``key``?"""
+
+    def predicate(output: Any) -> bool:
+        return condition_fn(output) == key
+
+    return predicate
+
+
 class StateGraph:
     """LangGraph-style declarative graph builder.
 
@@ -285,24 +294,24 @@ class StateGraph:
             ... )
         """
         # Create conditions from mapping
-        conditions = []
-        for key, target in mapping.items():
-            predicate = lambda x, k=key: condition_fn(x) == k
-            conditions.append(
-                Condition(
-                    name=key,
-                    predicate=predicate,
-                    target_node=target,
-                )
+        conditions = [
+            Condition(
+                name=key,
+                predicate=_branch_predicate(condition_fn, key),
+                target_node=target,
             )
+            for key, target in mapping.items()
+        ]
 
-        # Create synthetic condition node (always deterministic mode)
+        # Create synthetic condition node (always deterministic mode).
+        # A raising condition_fn fails the run rather than silently picking no branch.
         condition_node_id = f"{source}_condition"
         condition_node = ConditionNode(
             id=condition_node_id,
             condition_routing="deterministic",
             conditions=conditions,
             default_target=default,
+            on_error="raise",
         )
 
         # Add condition node
