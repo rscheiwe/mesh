@@ -33,7 +33,8 @@ class ScriptedProvider(BaseProvider):
         self.calls: list[list[dict[str, Any]]] = []
 
     async def stream(self, messages, model, tools, generation_config=None):
-        self.calls.append(messages)
+        # Snapshot: vel keeps mutating the list it passed in after the call
+        self.calls.append([dict(m) for m in messages])
         if not self._script:
             raise RuntimeError("ScriptedProvider: script exhausted")
         for event in self._script.pop(0):

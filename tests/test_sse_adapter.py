@@ -5,7 +5,8 @@ from mesh.streaming.sse import SSEAdapter
 
 
 def test_sse_event_line_uses_the_wire_type():
-    event = ExecutionEvent(type=EventType.TEXT_DELTA, raw_event={"type": "text-delta", "id": "t", "delta": "hi"})
+    raw = {"type": "text-delta", "id": "t", "delta": "hi"}
+    event = ExecutionEvent(type=EventType.TEXT_DELTA, raw_event=raw)
 
     lines = SSEAdapter().format_event(event).splitlines()
 
