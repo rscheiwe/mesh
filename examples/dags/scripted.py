@@ -74,6 +74,7 @@ def scripted_agent(
     script: list[list[Any]],
     output_type: type | None = None,
     tools: list[ToolSpec] | None = None,
+    tool_context: dict[str, Any] | None = None,
 ) -> Agent:
     """Build a real vel Agent whose model calls are served by ``script``."""
     agent = Agent(
@@ -81,6 +82,7 @@ def scripted_agent(
         model={"provider": "scripted", "model": "scripted"},
         output_type=output_type,
         tools=tools or [],
+        tool_context=tool_context,
     )
     agent._custom_provider = ScriptedProvider(script)
     return agent

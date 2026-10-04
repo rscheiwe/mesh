@@ -19,6 +19,9 @@ from mesh.utils.input_parser import (
     parse_natural_language_input
 )
 from mesh.nodes.condition import is_condition_output
+
+# Vel events with no special handling that must still reach the stream
+_PASSTHROUGH_EVENT_TYPES = ("tool-input-error", "tool-output-error", "abort")
 from mesh.core.events import (
     create_mesh_node_start_event,
     create_mesh_node_complete_event,
@@ -457,6 +460,23 @@ class AgentNode(BaseNode):
                                 type=EventType.TOOL_OUTPUT_AVAILABLE,
                                 node_id=self.id,
                                 output=event.get("output"),
+                                metadata={
+                                    "tool_call_id": event.get("toolCallId"),
+                                    "node_type": "agent",
+                                    "agent_id": self.agent.id if hasattr(self.agent, 'id') else None,
+                                },
+                                raw_event=event,
+                            )
+                        )
+
+                    elif event_type in _PASSTHROUGH_EVENT_TYPES:
+                        # Tool errors and aborts: forwarded as-is so the tool call
+                        # is closed on the client (vel keeps the run going)
+                        await self._emit_event_if_enabled(context,
+                            ExecutionEvent(
+                                type=EventType(event_type),
+                                node_id=self.id,
+                                error=event.get("errorText"),
                                 metadata={
                                     "tool_call_id": event.get("toolCallId"),
                                     "node_type": "agent",

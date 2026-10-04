@@ -45,6 +45,9 @@ class EventType(str, Enum):
     TOOL_INPUT_DELTA = "tool-input-delta"  # Tool args streaming
     TOOL_INPUT_AVAILABLE = "tool-input-available"  # Tool ready to execute
     TOOL_OUTPUT_AVAILABLE = "tool-output-available"  # Tool result ready
+    TOOL_INPUT_ERROR = "tool-input-error"  # Tool call arguments invalid
+    TOOL_OUTPUT_ERROR = "tool-output-error"  # Tool execution failed
+    ABORT = "abort"  # Generation aborted (cancel token)
 
     # AI SDK V5 - Multi-step agents
     START_STEP = "start-step"  # Step start

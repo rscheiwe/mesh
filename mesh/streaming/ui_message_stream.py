@@ -30,6 +30,7 @@ STREAM_HEADERS = {
 _PROVIDER = {"providerMetadata"}
 _TOOL_FLAGS = {"providerExecuted", "dynamic"}
 CHUNK_KEYS: dict[str, set[str]] = {
+    "abort": set(),
     "start-step": set(),
     "finish-step": set(),
     "text-start": {"id"} | _PROVIDER,
