@@ -611,7 +611,7 @@ class Executor:
             # Check if all inputs received (skipped parents count as satisfied)
             if self._has_all_inputs(waiting_nodes[child_id], context.skipped_nodes):
                 # Combine inputs and queue
-                combined = self._combine_inputs(waiting_nodes[child_id].received_inputs)
+                combined = self._join_input(child_id, waiting_nodes[child_id].received_inputs)
                 queue.append(NodeQueueItem(node_id=child_id, inputs=combined))
                 # Remove from waiting
                 del waiting_nodes[child_id]
@@ -777,9 +777,17 @@ class Executor:
             if child_id in context.skipped_nodes:
                 continue
             if self._has_all_inputs(waiting, context.skipped_nodes):
-                combined = self._combine_inputs(waiting.received_inputs)
+                combined = self._join_input(child_id, waiting.received_inputs)
                 queue.append(NodeQueueItem(node_id=child_id, inputs=combined))
                 del waiting_nodes[child_id]
+
+    def _join_input(self, node_id: str, received: Dict[str, Any]) -> Any:
+        """Input for a join: the fan-in aggregator's result if one is set
+        (``add_fan_in_edge(..., aggregator=...)``), else the merged parent outputs."""
+        aggregator = self.graph.fan_in_aggregators.get(node_id)
+        if aggregator is not None:
+            return aggregator(dict(received))
+        return self._combine_inputs(received)
 
     def _combine_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Combine inputs from multiple parent nodes.
