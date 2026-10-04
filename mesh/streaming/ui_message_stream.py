@@ -12,7 +12,7 @@ Example with FastAPI:
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from mesh.core.events import EventType, ExecutionEvent
@@ -79,6 +79,9 @@ class UIMessageStreamAdapter:
         include_node_events: Emit transient ``data-mesh-node`` progress parts.
         include_outputs: Attach node outputs to ``data-mesh-node`` parts. Off by
             default so node outputs and state never reach the client.
+        error_text: Maps a run failure to the ``errorText`` the client sees. The
+            default is ``str(exc)``, which includes internal node names; pass a
+            function returning a user-safe message in production.
     """
 
     def __init__(
@@ -88,10 +91,12 @@ class UIMessageStreamAdapter:
         graph: Any = None,
         include_node_events: bool = True,
         include_outputs: bool = False,
+        error_text: Callable[[BaseException], str] = str,
     ):
         self.message_id = message_id
         self.include_node_events = include_node_events
         self.include_outputs = include_outputs
+        self.error_text = error_text
         self.hidden_text_nodes = _structured_output_nodes(graph)
 
     async def chunks(self, events: AsyncIterator[ExecutionEvent]) -> AsyncIterator[dict]:
@@ -109,7 +114,7 @@ class UIMessageStreamAdapter:
             logger.debug("Run failed, closing stream: %s", exc)
             if not run.error_sent:
                 run.error_sent = True
-                yield {"type": "error", "errorText": str(exc)}
+                yield {"type": "error", "errorText": self.error_text(exc)}
         finally:
             close = getattr(events, "aclose", None)
             if close is not None:
@@ -138,7 +143,7 @@ class UIMessageStreamAdapter:
         if event.type in _LIFECYCLE_STATUS:
             return self._lifecycle_chunk(event, run)
         if event.type == EventType.EXECUTION_ERROR:
-            return run.error(event.error or "Execution failed")
+            return run.error(self.error_text(RuntimeError(event.error or "Execution failed")))
         if event.type in (EventType.INTERRUPT, EventType.EXECUTION_COMPLETE):
             return _pause_chunk(event)
         if event.type == EventType.EXECUTION_START:
@@ -149,7 +154,8 @@ class UIMessageStreamAdapter:
         if chunk_type in _DROPPED:
             return []
         if chunk_type == "error":
-            return run.error(raw.get("errorText") or event.error or "Error")
+            text = raw.get("errorText") or event.error or "Error"
+            return run.error(self.error_text(RuntimeError(text)))
         if chunk_type == "source":
             return _source_chunks(raw)
         if chunk_type.startswith("data-"):

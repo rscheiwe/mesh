@@ -109,3 +109,22 @@ async def test_sse_frames_end_with_done():
 
     assert all(f.startswith("data: ") and f.endswith("\n\n") for f in frames)
     assert frames[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.parametrize("failure", ["tool", "model"])
+async def test_error_text_hook_controls_what_the_client_sees(monkeypatch, failure):
+    explain_script = [text_turn("Done.")]
+    if failure == "tool":
+        monkeypatch.setattr(dag, "scale", lambda state: 1 / 0)
+    else:
+        explain_script = [[RuntimeError("upstream 503 from api.example internal")]]
+
+    chunks = await _stream(
+        [json_turn(ACME_SLOTS)],
+        explain_script,
+        {"text": ACME_BRIEF},
+        error_text=lambda exc: "Something went wrong. Please try again.",
+    )
+
+    errors = [c for c in chunks if c["type"] == "error"]
+    assert errors == [{"type": "error", "errorText": "Something went wrong. Please try again."}]
