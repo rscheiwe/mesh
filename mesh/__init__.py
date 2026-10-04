@@ -55,6 +55,7 @@ from mesh.parsers.react_flow import ReactFlowParser
 # Streaming
 from mesh.streaming.iterator import StreamIterator
 from mesh.streaming.sse import SSEAdapter
+from mesh.streaming.ui_message_stream import UIMessageStreamAdapter
 
 # Checkpointing
 from mesh.checkpoints import (
@@ -144,6 +145,7 @@ __all__ = [
     # Streaming
     "StreamIterator",
     "SSEAdapter",
+    "UIMessageStreamAdapter",
     # Checkpointing
     "Checkpoint",
     "CheckpointConfig",

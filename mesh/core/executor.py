@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, Set, List, Optional, Union, AsyncIterator
 from datetime import datetime
 import asyncio
+from contextlib import aclosing, suppress
 
 from mesh.core.graph import ExecutionGraph
 from mesh.core.events import ExecutionEvent, EventType, EventEmitter
@@ -40,6 +41,13 @@ class NodeQueueItem:
 
     node_id: str
     inputs: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _NodeRun:
+    """Result holder for a node streamed by ``Executor._stream_node``."""
+
+    result: Any = None
 
 
 @dataclass
@@ -287,49 +295,14 @@ class Executor:
                         )
                         return  # Exit generator - execution paused
 
-                # Set up event queue for streaming during execution
-                event_queue: asyncio.Queue[Optional[ExecutionEvent]] = asyncio.Queue()
-
-                async def event_listener(event: ExecutionEvent):
-                    """Capture events emitted during node execution."""
-                    await event_queue.put(event)
-
-                # Register listener
-                self.events.on(event_listener)
-
-                # Execute node in background task
-                execute_task = asyncio.create_task(
-                    node.execute(input=current.inputs, context=context)
-                )
-
-                # Yield events as they stream in
-                result = None
-                while True:
-                    # Check if execution is complete
-                    if execute_task.done():
-                        # Get result
-                        result = await execute_task
-                        # Drain any remaining events
-                        while not event_queue.empty():
-                            try:
-                                evt = event_queue.get_nowait()
-                                if evt:
-                                    yield evt
-                            except asyncio.QueueEmpty:
-                                break
-                        break
-
-                    # Wait for next event or task completion
-                    try:
-                        evt = await asyncio.wait_for(event_queue.get(), timeout=0.01)
-                        if evt:
-                            yield evt
-                    except asyncio.TimeoutError:
-                        # No events yet, continue checking
-                        continue
-
-                # Remove listener
-                self.events.off(event_listener)
+                # Run the node, relaying its events; cancelled if the consumer stops
+                node_run = _NodeRun()
+                async with aclosing(
+                    self._stream_node(node, current.inputs, context, node_run)
+                ) as node_events:
+                    async for evt in node_events:
+                        yield evt
+                result = node_run.result
 
                 # Update state
                 if result.state:
@@ -509,6 +482,49 @@ class Executor:
             timestamp=datetime.now(),
             metadata={"iterations": iteration, "trace_id": context.trace_id},
         )
+
+    async def _stream_node(
+        self,
+        node: Any,
+        inputs: Any,
+        context: ExecutionContext,
+        node_run: _NodeRun,
+    ) -> AsyncIterator[ExecutionEvent]:
+        """Run one node in a task and relay the events it emits.
+
+        The node's result is stored on ``node_run``. If the consumer stops
+        early (client disconnect, ``aclose()``), the node task is cancelled so
+        in-flight work such as a model call does not keep running. The event
+        listener is always removed, including when the node fails.
+        """
+        event_queue: asyncio.Queue[Optional[ExecutionEvent]] = asyncio.Queue()
+
+        async def event_listener(event: ExecutionEvent) -> None:
+            await event_queue.put(event)
+
+        self.events.on(event_listener)
+        task = asyncio.create_task(node.execute(input=inputs, context=context))
+        try:
+            while True:
+                if task.done():
+                    node_run.result = await task
+                    while not event_queue.empty():
+                        evt = event_queue.get_nowait()
+                        if evt:
+                            yield evt
+                    return
+                try:
+                    evt = await asyncio.wait_for(event_queue.get(), timeout=0.01)
+                    if evt:
+                        yield evt
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            self.events.off(event_listener)
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
 
     async def _process_node_outputs(
         self,
@@ -944,48 +960,14 @@ class Executor:
                         timestamp=datetime.now(),
                     )
 
-                # Set up event queue for streaming during execution
-                event_queue: asyncio.Queue[Optional[ExecutionEvent]] = asyncio.Queue()
-
-                async def event_listener(event: ExecutionEvent):
-                    """Capture events emitted during node execution."""
-                    await event_queue.put(event)
-
-                # Register listener
-                self.events.on(event_listener)
-
-                # Execute node in background task
-                execute_task = asyncio.create_task(
-                    node.execute(input=current.inputs, context=context)
-                )
-
-                # Yield events as they stream in
-                result = None
-                while True:
-                    # Check if execution is complete
-                    if execute_task.done():
-                        # Get result
-                        result = await execute_task
-                        # Drain any remaining events
-                        while not event_queue.empty():
-                            try:
-                                evt = event_queue.get_nowait()
-                                if evt:
-                                    yield evt
-                            except asyncio.QueueEmpty:
-                                break
-                        break
-
-                    # Wait for next event or task completion
-                    try:
-                        evt = await asyncio.wait_for(event_queue.get(), timeout=0.01)
-                        if evt:
-                            yield evt
-                    except asyncio.TimeoutError:
-                        continue
-
-                # Remove listener
-                self.events.off(event_listener)
+                # Run the node, relaying its events; cancelled if the consumer stops
+                node_run = _NodeRun()
+                async with aclosing(
+                    self._stream_node(node, current.inputs, context, node_run)
+                ) as node_events:
+                    async for evt in node_events:
+                        yield evt
+                result = node_run.result
 
                 # Update state
                 if result.state:
@@ -1685,40 +1667,14 @@ class Executor:
                 if resumed_from_node_id == current.node_id:
                     resumed_from_node_id = None
 
-                # Set up event queue for streaming
-                event_queue: asyncio.Queue[Optional[ExecutionEvent]] = asyncio.Queue()
-
-                async def event_listener(event: ExecutionEvent):
-                    await event_queue.put(event)
-
-                self.events.on(event_listener)
-
-                # Execute node
-                execute_task = asyncio.create_task(
-                    node.execute(input=current.inputs, context=context)
-                )
-
-                result = None
-                while True:
-                    if execute_task.done():
-                        result = await execute_task
-                        while not event_queue.empty():
-                            try:
-                                evt = event_queue.get_nowait()
-                                if evt:
-                                    yield evt
-                            except asyncio.QueueEmpty:
-                                break
-                        break
-
-                    try:
-                        evt = await asyncio.wait_for(event_queue.get(), timeout=0.01)
-                        if evt:
-                            yield evt
-                    except asyncio.TimeoutError:
-                        continue
-
-                self.events.off(event_listener)
+                # Run the node, relaying its events; cancelled if the consumer stops
+                node_run = _NodeRun()
+                async with aclosing(
+                    self._stream_node(node, current.inputs, context, node_run)
+                ) as node_events:
+                    async for evt in node_events:
+                        yield evt
+                result = node_run.result
 
                 # Update state
                 if result.state:
