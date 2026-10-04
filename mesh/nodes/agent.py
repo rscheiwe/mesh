@@ -5,7 +5,7 @@ frameworks. It auto-detects whether an agent is from Vel SDK or OpenAI
 Agents SDK and handles streaming appropriately.
 """
 
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import os
 
 from mesh.nodes.base import BaseNode, NodeResult
@@ -314,6 +314,9 @@ class AgentNode(BaseNode):
         full_response = ""
         chat_history = []
         structured_output = None  # Captured from data-object-complete event
+        # response-metadata is not an AI SDK chunk, so it is kept off the stream
+        # and reported on the NodeResult instead (one entry per model call)
+        response_metadata: List[Dict[str, Any]] = []
 
         try:
             # Vel expects input as a Dict
@@ -606,8 +609,16 @@ class AgentNode(BaseNode):
                         )
 
                     elif event_type == "response-metadata":
-                        # Usage statistics, model info, timing (AI SDK format)
-                        # TODO: Filtered out - not compatible with AI SDK useChat hook
+                        # Usage statistics, model info, timing. Not an AI SDK chunk
+                        # (useChat rejects it), so record it for the NodeResult.
+                        response_metadata.append(
+                            {
+                                "id": event.get("id"),
+                                "model_id": event.get("modelId"),
+                                "usage": event.get("usage"),
+                                "timestamp": event.get("timestamp"),
+                            }
+                        )
                         # await self._emit_event_if_enabled(context,
                         #     ExecutionEvent(
                         #         type=EventType.RESPONSE_METADATA,
@@ -742,6 +753,7 @@ class AgentNode(BaseNode):
                     "agent_id": getattr(self.agent, "id", "unknown"),
                     "structured_output": True,
                     "output_type": str(output_type),
+                    "response_metadata": response_metadata,
                 },
             )
 
@@ -751,6 +763,7 @@ class AgentNode(BaseNode):
             metadata={
                 "agent_type": "vel",
                 "agent_id": getattr(self.agent, "id", "unknown"),
+                "response_metadata": response_metadata,
             },
         )
 

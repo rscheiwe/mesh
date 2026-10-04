@@ -130,11 +130,12 @@ async def test_response_metadata_events(execution_context):
 
     result = await node._execute_impl("test input", execution_context)
 
-    # Verify metadata event was emitted
+    # response-metadata is not an AI SDK chunk (useChat rejects it): it stays off
+    # the stream and is reported on the NodeResult instead.
     metadata_events = [e for e in events if e.type == EventType.RESPONSE_METADATA]
-    assert len(metadata_events) == 1
+    assert metadata_events == []
 
-    meta = metadata_events[0].metadata
+    meta = result.metadata["response_metadata"][0]
     assert meta["id"] == "resp-123"
     assert meta["model_id"] == "gpt-4"
     assert meta["usage"]["prompt_tokens"] == 10
@@ -346,7 +347,7 @@ async def test_combined_events_scenario(execution_context):
     assert EventType.TOOL_CALL_COMPLETE in event_types
     assert EventType.TOKEN in event_types
     assert EventType.SOURCE in event_types
-    assert EventType.RESPONSE_METADATA in event_types
+    assert EventType.RESPONSE_METADATA not in event_types  # kept off the stream
 
     # Verify order of events makes sense
     reasoning_start_idx = next(i for i, e in enumerate(events) if e.type == EventType.REASONING_START)

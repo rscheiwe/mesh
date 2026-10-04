@@ -66,12 +66,12 @@ class SSEAdapter:
         # Build SSE event
         lines = []
 
-        # Event type
-        event_name = self.event_name or event.type
-        lines.append(f"event: {event_name}")
-
         # Event data
         data = event.to_dict()
+
+        # Event type (the wire type, not the EventType enum's repr)
+        event_name = self.event_name or data["type"]
+        lines.append(f"event: {event_name}")
         data_json = json.dumps(data)
         lines.append(f"data: {data_json}")
 
@@ -104,9 +104,10 @@ class SSEAdapter:
 
         async def event_generator():
             async for event in event_stream:
+                data = event.to_dict()
                 yield {
-                    "event": event.type,
-                    "data": json.dumps(event.to_dict()),
+                    "event": data["type"],
+                    "data": json.dumps(data),
                 }
 
         return EventSourceResponse(event_generator())

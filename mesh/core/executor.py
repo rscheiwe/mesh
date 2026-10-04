@@ -165,6 +165,7 @@ class Executor:
                 from mesh.nodes.start import StartNode
                 from mesh.nodes.dynamic_tool_selector import DynamicToolSelectorNode
                 from mesh.nodes.conversation import ConversationNode
+                from mesh.nodes.condition import ConditionNode
 
                 # Skip Tool nodes that only feed into DynamicToolSelector or ConversationNode
                 # These nodes provide metadata only, not execution
@@ -204,7 +205,7 @@ class Executor:
                         continue  # Skip normal execution for this tool node
 
                 # Emit node start event (skip for nodes that emit their own with metadata)
-                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode)):
+                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode, ConditionNode)):
                     yield ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=current.node_id,
@@ -934,8 +935,9 @@ class Executor:
                 from mesh.nodes.llm import LLMNode
                 from mesh.nodes.tool import ToolNode
                 from mesh.nodes.start import StartNode
+                from mesh.nodes.condition import ConditionNode
 
-                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode)):
+                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode, ConditionNode)):
                     yield ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=current.node_id,
@@ -1594,8 +1596,9 @@ class Executor:
                 from mesh.nodes.llm import LLMNode
                 from mesh.nodes.tool import ToolNode
                 from mesh.nodes.start import StartNode
+                from mesh.nodes.condition import ConditionNode
 
-                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode)):
+                if not isinstance(node, (AgentNode, LLMNode, ToolNode, StartNode, ConditionNode)):
                     yield ExecutionEvent(
                         type=EventType.NODE_START,
                         node_id=current.node_id,

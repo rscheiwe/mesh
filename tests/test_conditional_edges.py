@@ -142,3 +142,13 @@ async def test_default_target_shared_with_a_mapped_branch_still_runs():
     graph.set_entry_point("decide")
 
     assert await _completed(graph) == ["decide", "handler"]
+
+
+async def test_condition_node_emits_a_single_node_start():
+    executor = Executor(_branching_graph("l").compile(), MemoryBackend())
+    events = [e async for e in executor.execute("go", _ctx())]
+
+    starts = [
+        e for e in events if e.type == EventType.NODE_START and e.node_id == "decide_condition"
+    ]
+    assert len(starts) == 1

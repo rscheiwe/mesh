@@ -184,6 +184,12 @@ class ExecutionEvent:
         """
         event_type = self.type.value if isinstance(self.type, EventType) else self.type
 
+        # Custom data parts that name their own data-* type are passed through
+        # under that type, so the client's onData/part renderers see them as sent
+        custom_chunk = self._custom_data_chunk()
+        if custom_chunk is not None:
+            return custom_chunk
+
         # For data-* events, wrap everything in 'data' field
         if event_type.startswith("data-"):
             payload = {
@@ -261,6 +267,38 @@ class ExecutionEvent:
             # Use data-* events for Mesh orchestration metadata instead.
 
             return result
+
+
+    def _custom_data_chunk(self) -> Optional[Dict[str, Any]]:
+        """AI SDK data part for a CUSTOM_DATA event that names its own type.
+
+        Sources, in order: the original ``data-*`` event (``raw_event``, e.g. from
+        vel), ``metadata["data_event_type"]`` with ``metadata["data"]`` (mesh
+        helpers), and ``metadata["data_type"]`` with ``content``. Returns None
+        when the event names no ``data-*`` type, keeping the generic
+        ``data-custom`` wrapper.
+        """
+        if self.type != EventType.CUSTOM_DATA:
+            return None
+
+        raw = self.raw_event if isinstance(self.raw_event, dict) else {}
+        if str(raw.get("type", "")).startswith("data-"):
+            chunk = {"type": raw["type"], "data": raw.get("data")}
+            for key in ("id", "transient"):
+                if key in raw:
+                    chunk[key] = raw[key]
+            return chunk
+
+        metadata = self.metadata or {}
+        if str(metadata.get("data_event_type", "")).startswith("data-"):
+            chunk = {"type": metadata["data_event_type"], "data": metadata.get("data")}
+        elif str(metadata.get("data_type", "")).startswith("data-"):
+            chunk = {"type": metadata["data_type"], "data": self.content}
+        else:
+            return None
+        if "transient" in metadata:
+            chunk["transient"] = metadata["transient"]
+        return chunk
 
 
 # Helper functions for creating custom data-* events
