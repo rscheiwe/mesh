@@ -543,3 +543,21 @@ class EventEmitter:
     def clear(self) -> None:
         """Remove all event listeners."""
         self._listeners.clear()
+
+
+class ScopedEventEmitter(EventEmitter):
+    """Emitter for a single run that also forwards to a shared parent.
+
+    Listeners registered here (e.g. the executor's per-node relays) only see
+    this run's events, so concurrent runs on one Executor stay separate, while
+    listeners on the parent still see every run.
+    """
+
+    def __init__(self, parent: EventEmitter):
+        super().__init__()
+        self._parent = parent
+
+    async def emit(self, event: ExecutionEvent) -> None:
+        """Emit to this run's listeners, then to the parent's."""
+        await super().emit(event)
+        await self._parent.emit(event)

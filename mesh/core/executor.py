@@ -13,7 +13,7 @@ import asyncio
 from contextlib import aclosing, suppress
 
 from mesh.core.graph import ExecutionGraph
-from mesh.core.events import ExecutionEvent, EventType, EventEmitter
+from mesh.core.events import ExecutionEvent, EventType, EventEmitter, ScopedEventEmitter
 from mesh.core.state import ExecutionContext
 from mesh.utils.errors import NodeExecutionError
 from mesh.interrupts import InterruptState, InterruptResume, InterruptReject
@@ -138,7 +138,7 @@ class Executor:
             NodeExecutionError: If a node execution fails
         """
         # Set event emitter in context
-        context._event_emitter = self.events
+        context._event_emitter = ScopedEventEmitter(self.events)
         # Branch skips are per run; a reused context starts clean
         context.skipped_nodes = set()
 
@@ -502,7 +502,9 @@ class Executor:
         async def event_listener(event: ExecutionEvent) -> None:
             await event_queue.put(event)
 
-        self.events.on(event_listener)
+        # Listen on the run's own emitter so concurrent runs stay separate
+        emitter = context._event_emitter or self.events
+        emitter.on(event_listener)
         task = asyncio.create_task(node.execute(input=inputs, context=context))
         try:
             while True:
@@ -520,7 +522,7 @@ class Executor:
                 except asyncio.TimeoutError:
                     continue
         finally:
-            self.events.off(event_listener)
+            emitter.off(event_listener)
             if not task.done():
                 task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
@@ -850,7 +852,7 @@ class Executor:
         from mesh.nodes.approval import ApprovalResult as ApprovalResultClass
 
         # Set event emitter in context
-        context._event_emitter = self.events
+        context._event_emitter = ScopedEventEmitter(self.events)
 
         # Get pending execution state
         pending_state = context.state.get("_pending_execution")
@@ -1321,7 +1323,7 @@ class Executor:
 
         # Restore context
         context = await self.restore(checkpoint_id)
-        context._event_emitter = self.events
+        context._event_emitter = ScopedEventEmitter(self.events)
 
         # Check if we have a pending queue to resume from
         checkpoint = await self.state_backend.load_checkpoint(checkpoint_id)
@@ -1453,7 +1455,7 @@ class Executor:
             ...     print(event.type)
         """
         # Set event emitter in context
-        context._event_emitter = self.events
+        context._event_emitter = ScopedEventEmitter(self.events)
 
         # Get interrupt state
         interrupt_data = context.state.get("_interrupt_state")
