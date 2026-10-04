@@ -1278,15 +1278,20 @@ Returns:
             name = cond_config.get("name")
             target = cond_config.get("target")
             expression = cond_config.get("expression")
+            operation = cond_config.get("operation")
 
-            if not all([name, target, expression]):
+            if not (name and target and (expression or operation)):
                 raise GraphValidationError(
-                    f"Condition in node '{node_id}' missing required fields"
+                    f"Condition in node '{node_id}' missing required fields "
+                    f"(name, target, and an expression or field/operation)"
                 )
 
-            # Create predicate from expression
-            # Simple expression evaluation - can be extended
-            predicate = self._create_predicate(expression)
+            # Structured conditions compare one field of the input; expressions
+            # are matched against the input's string form
+            if operation:
+                predicate = self._create_field_predicate(node_id, cond_config)
+            else:
+                predicate = self._create_predicate(expression)
 
             conditions.append(
                 Condition(
@@ -1341,6 +1346,50 @@ Returns:
                 event_mode=config.get("eventMode", "full"),
                 config=config,
             )
+
+    FIELD_OPERATIONS = ("equal", "notEqual", "contains", "isEmpty", "notEmpty")
+
+    def _create_field_predicate(self, node_id: str, cond_config: Dict[str, Any]) -> Any:
+        """Predicate comparing one field of the input, e.g. Flowise-style
+        ``{"field": "kind", "operation": "equal", "value": "free_text"}``.
+
+        ``field`` is a dotted path into the input dict; a missing field reads as
+        None (so it counts as empty).
+        """
+        field_path = cond_config.get("field")
+        operation = cond_config["operation"]
+        expected = cond_config.get("value")
+        if not field_path:
+            raise GraphValidationError(
+                f"Condition '{cond_config.get('name')}' in node '{node_id}' needs a 'field'"
+            )
+        if operation not in self.FIELD_OPERATIONS:
+            raise GraphValidationError(
+                f"Condition '{cond_config.get('name')}' in node '{node_id}' has unknown "
+                f"operation '{operation}'; expected one of {self.FIELD_OPERATIONS}"
+            )
+
+        def read(value: Any) -> Any:
+            for key in field_path.split("."):
+                value = value.get(key) if isinstance(value, dict) else None
+            return value
+
+        def is_empty(value: Any) -> bool:
+            return value is None or (hasattr(value, "__len__") and len(value) == 0)
+
+        def predicate(input: Any) -> bool:
+            actual = read(input)
+            if operation == "equal":
+                return actual == expected
+            if operation == "notEqual":
+                return actual != expected
+            if operation == "contains":
+                return actual is not None and expected in actual
+            if operation == "isEmpty":
+                return is_empty(actual)
+            return not is_empty(actual)
+
+        return predicate
 
     def _create_predicate(self, expression: str) -> Any:
         """Create a predicate function from an expression string.

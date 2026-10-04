@@ -1,0 +1,242 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "type": "customNode",
+      "data": {
+        "name": "startAgentflow",
+        "inputs": {}
+      }
+    },
+    {
+      "id": "route_input",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "route_input"
+        }
+      }
+    },
+    {
+      "id": "route",
+      "type": "customNode",
+      "data": {
+        "name": "conditionAgentflow",
+        "inputs": {
+          "conditions": [
+            {
+              "name": "form_submission",
+              "target": "merge_form",
+              "field": "kind",
+              "operation": "equal",
+              "value": "form_submission"
+            },
+            {
+              "name": "free_text",
+              "target": "extract",
+              "field": "kind",
+              "operation": "equal",
+              "value": "free_text"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "merge_form",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "merge_form"
+        }
+      }
+    },
+    {
+      "id": "extract",
+      "type": "customNode",
+      "data": {
+        "name": "agentAgentflow",
+        "inputs": {
+          "agent": "extract"
+        }
+      }
+    },
+    {
+      "id": "validate",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "validate"
+        }
+      }
+    },
+    {
+      "id": "gate",
+      "type": "customNode",
+      "data": {
+        "name": "conditionAgentflow",
+        "inputs": {
+          "conditions": [
+            {
+              "name": "missing",
+              "target": "brief_form",
+              "field": "missing",
+              "operation": "notEmpty"
+            },
+            {
+              "name": "ok",
+              "target": "benchmarks",
+              "field": "missing",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "brief_form",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "brief_form"
+        }
+      }
+    },
+    {
+      "id": "benchmarks",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "benchmarks"
+        }
+      }
+    },
+    {
+      "id": "scale",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "scale"
+        }
+      }
+    },
+    {
+      "id": "viability",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "viability"
+        }
+      }
+    },
+    {
+      "id": "allocate",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "allocate"
+        }
+      }
+    },
+    {
+      "id": "explain",
+      "type": "customNode",
+      "data": {
+        "name": "agentAgentflow",
+        "inputs": {
+          "agent": "explain"
+        }
+      }
+    },
+    {
+      "id": "guard",
+      "type": "customNode",
+      "data": {
+        "name": "toolAgentflow",
+        "inputs": {
+          "tool": "guard"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-start-route_input",
+      "source": "start",
+      "target": "route_input"
+    },
+    {
+      "id": "e-route_input-route",
+      "source": "route_input",
+      "target": "route"
+    },
+    {
+      "id": "e-route-merge_form",
+      "source": "route",
+      "target": "merge_form"
+    },
+    {
+      "id": "e-route-extract",
+      "source": "route",
+      "target": "extract"
+    },
+    {
+      "id": "e-merge_form-validate",
+      "source": "merge_form",
+      "target": "validate"
+    },
+    {
+      "id": "e-extract-validate",
+      "source": "extract",
+      "target": "validate"
+    },
+    {
+      "id": "e-validate-gate",
+      "source": "validate",
+      "target": "gate"
+    },
+    {
+      "id": "e-gate-brief_form",
+      "source": "gate",
+      "target": "brief_form"
+    },
+    {
+      "id": "e-gate-benchmarks",
+      "source": "gate",
+      "target": "benchmarks"
+    },
+    {
+      "id": "e-benchmarks-scale",
+      "source": "benchmarks",
+      "target": "scale"
+    },
+    {
+      "id": "e-scale-viability",
+      "source": "scale",
+      "target": "viability"
+    },
+    {
+      "id": "e-viability-allocate",
+      "source": "viability",
+      "target": "allocate"
+    },
+    {
+      "id": "e-allocate-explain",
+      "source": "allocate",
+      "target": "explain"
+    },
+    {
+      "id": "e-explain-guard",
+      "source": "explain",
+      "target": "guard"
+    }
+  ]
+}

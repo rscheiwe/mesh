@@ -16,15 +16,18 @@ Run offline with scripted models:
 """
 
 import asyncio
+import json
 import re
 import uuid
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from mesh import ExecutionContext, Executor, MemoryBackend, StateGraph
+from mesh import ExecutionContext, Executor, MemoryBackend, NodeRegistry, StateGraph
 from mesh.core.events import EventType, ExecutionEvent
 from mesh.core.graph import ExecutionGraph
+from mesh.parsers.react_flow import ReactFlowParser
 
 # --------------------------------------------------------------------------
 # Fixtures: a slice of the case-study data (2 verticals x 3 products, US/EMEA)
@@ -263,6 +266,30 @@ def build_graph(extract_agent: Any, explain_agent: Any) -> ExecutionGraph:
     graph.add_edge("allocate", "explain")
     graph.add_edge("explain", "guard")
     return graph.compile()
+
+
+FLOW_PATH = Path(__file__).with_name("brief_to_recommendation.flow.json")
+TOOLS = {
+    "route_input": route_input,
+    "merge_form": merge_form,
+    "validate": validate,
+    "brief_form": brief_form,
+    "benchmarks": benchmarks,
+    "scale": scale,
+    "viability": viability,
+    "allocate": allocate,
+    "guard": guard,
+}
+
+
+def build_graph_from_flow(extract_agent: Any, explain_agent: Any) -> ExecutionGraph:
+    """DAG A from its Flowise-style node/edge JSON, with tools and agents by name."""
+    registry = NodeRegistry()
+    for name, fn in TOOLS.items():
+        registry.register_tool(name, fn)
+    registry.register_agent("extract", extract_agent)
+    registry.register_agent("explain", explain_agent)
+    return ReactFlowParser(registry).parse(json.loads(FLOW_PATH.read_text()))
 
 
 def new_context(state: dict[str, Any] | None = None) -> ExecutionContext:

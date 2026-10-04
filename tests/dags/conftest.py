@@ -5,8 +5,8 @@ from typing import Any
 
 from mesh.core.events import EventType, ExecutionEvent
 
-# Synthetic nodes that are wiring rather than pipeline steps.
-_WIRING_SUFFIXES = ("_condition",)
+# Node types that are wiring rather than pipeline steps.
+_WIRING_NODE_TYPES = {"start", "condition"}
 
 
 async def collect(stream: AsyncIterator[ExecutionEvent]) -> list[ExecutionEvent]:
@@ -15,12 +15,17 @@ async def collect(stream: AsyncIterator[ExecutionEvent]) -> list[ExecutionEvent]
 
 
 def completed_nodes(events: list[ExecutionEvent]) -> list[str]:
-    """Pipeline nodes in completion order (START and condition wiring excluded)."""
+    """Pipeline nodes in completion order (start and condition wiring excluded)."""
+    wiring = {
+        e.node_id
+        for e in events
+        if (e.metadata or {}).get("node_type") in _WIRING_NODE_TYPES
+    }
     order: list[str] = []
     for event in events:
         if event.type != EventType.NODE_COMPLETE or not event.node_id:
             continue
-        if event.node_id == "START" or event.node_id.endswith(_WIRING_SUFFIXES):
+        if event.node_id in wiring:
             continue
         if event.node_id not in order:
             order.append(event.node_id)
