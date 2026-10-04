@@ -20,6 +20,9 @@ from mesh.utils.input_parser import (
 )
 from mesh.nodes.condition import is_condition_output
 
+INPUT_MODES = ("message", "messages")
+DEFAULT_INPUT_PARSER_MODEL = {"provider": "openai", "model": "gpt-4o-mini"}
+
 # Vel events with no special handling that must still reach the stream
 _PASSTHROUGH_EVENT_TYPES = ("tool-input-error", "tool-output-error", "abort")
 from mesh.core.events import (
@@ -61,6 +64,10 @@ class AgentNode(BaseNode):
         streaming: bool = True,
         auto_inject_context: bool = False,
         config: Dict[str, Any] = None,
+        input_mode: str = "message",
+        use_session: bool = True,
+        auto_parse_input: bool = True,
+        input_parser_model: Optional[Dict[str, Any]] = None,
     ):
         """Initialize agent node.
 
@@ -82,8 +89,28 @@ class AgentNode(BaseNode):
                 Tool, and RAG node outputs into the system prompt as structured context.
                 The user does not need to manually reference {{variables}} for these nodes.
             config: Additional configuration
+            input_mode: How the vel agent receives the turn:
+                - "message" (default): ``{"message": <text>}``; vel keeps history
+                  per session when ``use_session`` is True
+                - "messages": ``{"messages": context.chat_history + [user]}``; the
+                  caller owns history and vel sessions are not used
+            use_session: Pass ``context.session_id`` to vel (message mode only).
+                With a stable session id, vel re-adds the agent's instruction as a
+                system message on every turn; set False for single-shot nodes.
+            auto_parse_input: When the system prompt references several
+                ``{{$input.X}}`` variables, parse the input with an extra LLM call
+                (``input_parser_model``) before running the agent. Set False to
+                avoid that hidden call.
+            input_parser_model: Model config for that parse
+                (default OpenAI ``gpt-4o-mini``).
         """
+        if input_mode not in INPUT_MODES:
+            raise ValueError(f"input_mode must be one of {INPUT_MODES}, got: {input_mode}")
         super().__init__(id, config or {})
+        self.input_mode = input_mode
+        self.use_session = use_session
+        self.auto_parse_input = auto_parse_input
+        self.input_parser_model = input_parser_model or dict(DEFAULT_INPUT_PARSER_MODEL)
         self.agent = agent
         self.system_prompt = system_prompt
         self.use_native_events = use_native_events
@@ -180,14 +207,13 @@ class AgentNode(BaseNode):
             message = self._extract_message(input)
 
             # Auto-parse natural language input if system_prompt has multiple {{$input.X}} variables
-            if self.system_prompt and should_parse_input(self.system_prompt, input):
+            if (
+                self.auto_parse_input
+                and self.system_prompt
+                and should_parse_input(self.system_prompt, input)
+            ):
                 field_names = detect_input_variables(self.system_prompt)
-
-                # Get model config for parser (use fast model for efficiency)
-                parser_model_config = {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini"  # Fast, cheap model for parsing
-                }
+                parser_model_config = self.input_parser_model
 
                 # Parse natural language into structured data
                 parsed_data = await parse_natural_language_input(
@@ -322,14 +348,7 @@ class AgentNode(BaseNode):
         response_metadata: List[Dict[str, Any]] = []
 
         try:
-            # Vel expects input as a Dict
-            input_data = {"message": message}
-
-            # Call run_stream with session_id
-            event_stream = self.agent.run_stream(
-                input=input_data,
-                session_id=context.session_id,
-            )
+            event_stream = self.agent.run_stream(**self._vel_call_args(message, context))
 
             async for event in event_stream:
                 # Emit token events
@@ -809,13 +828,7 @@ class AgentNode(BaseNode):
         """
         try:
             # Vel expects input as a Dict
-            input_data = {"message": message}
-
-            # Call run() (non-streaming) with session_id
-            result = await self.agent.run(
-                input=input_data,
-                session_id=context.session_id,
-            )
+            result = await self.agent.run(**self._vel_call_args(message, context))
 
             # Check if agent has output_type for structured output
             output_type = getattr(self.agent, 'output_type', None)
@@ -1403,6 +1416,20 @@ class AgentNode(BaseNode):
                 "total_usage": total_usage,
             },
         )
+
+    def _vel_call_args(self, message: str, context: ExecutionContext) -> Dict[str, Any]:
+        """Keyword arguments for vel ``run`` / ``run_stream`` per input_mode."""
+        if self.input_mode == "messages":
+            history = [
+                {"role": m["role"], "content": m["content"]}
+                for m in context.chat_history
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            return {"input": {"messages": [*history, {"role": "user", "content": message}]}}
+        args: Dict[str, Any] = {"input": {"message": message}}
+        if self.use_session:
+            args["session_id"] = context.session_id
+        return args
 
     def _extract_message(self, input: Any) -> str:
         """Extract message from input.

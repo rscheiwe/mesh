@@ -114,6 +114,10 @@ class StateGraph:
                 use_native_events=kwargs.get("use_native_events", False),
                 event_mode=kwargs.get("event_mode", "full"),
                 config=kwargs.get("config", {}),
+                input_mode=kwargs.get("input_mode", "message"),
+                use_session=kwargs.get("use_session", True),
+                auto_parse_input=kwargs.get("auto_parse_input", True),
+                input_parser_model=kwargs.get("input_parser_model"),
             )
         elif node_type == "tool":
             node = ToolNode(

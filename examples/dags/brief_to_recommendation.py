@@ -234,7 +234,9 @@ def build_graph(extract_agent: Any, explain_agent: Any) -> ExecutionGraph:
     graph = StateGraph()
     graph.add_node("route_input", route_input, node_type="tool")
     graph.add_node("merge_form", merge_form, node_type="tool")
-    graph.add_node("extract", extract_agent, node_type="agent")
+    # Single-shot agents: no vel session (see vel issue V1), no hidden input parsing
+    agent_options = {"use_session": False, "auto_parse_input": False}
+    graph.add_node("extract", extract_agent, node_type="agent", **agent_options)
     graph.add_node("validate", validate, node_type="tool")
     graph.add_node("brief_form", brief_form, node_type="tool")
     for name, fn in (
@@ -245,7 +247,7 @@ def build_graph(extract_agent: Any, explain_agent: Any) -> ExecutionGraph:
         ("guard", guard),
     ):
         graph.add_node(name, fn, node_type="tool")
-    graph.add_node("explain", explain_agent, node_type="agent")
+    graph.add_node("explain", explain_agent, node_type="agent", **agent_options)
 
     graph.set_entry_point("route_input")
     graph.add_conditional_edges(
