@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentmesh-py"
-version = "0.1.11"
+version = "0.2.0"
 description = "Python Agent Graph Orchestration Engine - Build multi-agent workflows as executable graphs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -63,7 +63,7 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
-    "vel-ai @ git+https://github.com/rscheiwe/vel.git@6b6a63da55275de311232dc15530ea17aef238ae",
+    "vel-ai @ git+https://github.com/rscheiwe/vel.git@6d1315c776982f5c897c523766306575ff812170",
 ]
 
 [project.urls]

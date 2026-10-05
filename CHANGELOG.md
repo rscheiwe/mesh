@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.x
+
+Released by the publish workflow, which bumps the patch number: `pyproject.toml` says 0.2.0, so the first release is 0.2.1.
+
+### Dependencies
+- The dev dependency group pins vel 0.5.0 (`6d1315c`). It fixes the vel issues found while building these changes: run-scoped system messages accumulating in sessions, structured-output JSON streamed as text, error exits leaving the step open, tool results sent as a Python repr, and `from_function` tools not receiving `ctx`. Mesh's workarounds (`use_session=False`, the stream adapter's text hiding and step closing) remain and are harmless with the new vel.
 
 ### Fixed
 - **Conditional edges never routed.** `StateGraph.add_conditional_edges` built predicates as `lambda x, k=key`, which `ConditionNode` called as `predicate(input, context)`, so no branch was ever taken. `ConditionNode` now counts only required positional parameters.

@@ -11,7 +11,7 @@ resolution-markers = [
 
 [[package]]
 name = "agentmesh-py"
-version = "0.1.11"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -89,7 +89,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
     { name = "pytest-cov", specifier = ">=4.1.0" },
     { name = "ruff", specifier = ">=0.1.0" },
-    { name = "vel-ai", git = "https://github.com/rscheiwe/vel.git?rev=6b6a63da55275de311232dc15530ea17aef238ae" },
+    { name = "vel-ai", git = "https://github.com/rscheiwe/vel.git?rev=6d1315c776982f5c897c523766306575ff812170" },
 ]
 
 [[package]]
@@ -2329,8 +2329,8 @@ wheels = [
 
 [[package]]
 name = "vel-ai"
-version = "0.4.0"
-source = { git = "https://github.com/rscheiwe/vel.git?rev=6b6a63da55275de311232dc15530ea17aef238ae#6b6a63da55275de311232dc15530ea17aef238ae" }
+version = "0.5.0"
+source = { git = "https://github.com/rscheiwe/vel.git?rev=6d1315c776982f5c897c523766306575ff812170#6d1315c776982f5c897c523766306575ff812170" }
 dependencies = [
     { name = "anthropic" },
     { name = "anyio" },

@@ -16,8 +16,8 @@ def _roles(call):
     return [m["role"] for m in call]
 
 
-async def test_stable_session_repeats_the_instruction_each_turn():
-    """Default behaviour, kept for compatibility (vel issue V1)."""
+async def test_stable_session_sends_one_instruction_per_call():
+    """vel >= 0.5 keeps run-scoped system messages out of session history."""
     agent = scripted_agent("a", [text_turn("1"), text_turn("2")])
     node = AgentNode(id="n", agent=agent, system_prompt="Be brief.")
     context = _ctx()
@@ -25,7 +25,7 @@ async def test_stable_session_repeats_the_instruction_each_turn():
     for turn in ("hi", "again"):
         await node.execute(input=turn, context=context)
 
-    assert _roles(agent._custom_provider.calls[1]).count("system") == 2
+    assert _roles(agent._custom_provider.calls[1]).count("system") == 1
 
 
 async def test_use_session_false_sends_one_instruction_per_call():
